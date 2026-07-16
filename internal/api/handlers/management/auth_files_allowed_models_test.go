@@ -64,6 +64,7 @@ func TestPatchAuthFileFieldsUpdatesAndEchoesModelPolicy(t *testing.T) {
 	if !reflect.DeepEqual(policy.Aliases, []string{"sonnet"}) {
 		t.Fatalf("aliases = %#v", policy.Aliases)
 	}
+	coreauth.MarkCredentialDraft(updated)
 
 	entry := h.buildAuthFileEntry(updated)
 	if entry == nil {
@@ -74,5 +75,8 @@ func TestPatchAuthFileFieldsUpdatesAndEchoesModelPolicy(t *testing.T) {
 	}
 	if got, okEffective := entry["effective_allowed_models"].([]string); !okEffective || !reflect.DeepEqual(got, []string{"claude-sonnet-*", "sonnet"}) {
 		t.Fatalf("effective_allowed_models = %#v", entry["effective_allowed_models"])
+	}
+	if got, okDraft := entry["credential_draft"].(bool); !okDraft || !got {
+		t.Fatalf("credential_draft = %#v", entry["credential_draft"])
 	}
 }

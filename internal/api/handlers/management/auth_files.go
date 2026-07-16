@@ -591,6 +591,7 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	entry["model_mapping"] = modelMapping
 	entry["model_rule_version"] = coreauth.AllowedModelRuleVersion(auth)
+	entry["credential_draft"] = coreauth.IsCredentialDraft(auth)
 	return entry
 }
 
@@ -1419,6 +1420,11 @@ func setSourceAuthFileDisabled(path string, disabled bool) error {
 		metadata = make(map[string]any)
 	}
 	metadata["disabled"] = disabled
+	if !disabled {
+		delete(metadata, coreauth.MetadataCredentialDraft)
+		delete(metadata, "pro_draft")
+		delete(metadata, "draft")
+	}
 	raw, errMarshal := json.Marshal(metadata)
 	if errMarshal != nil {
 		return fmt.Errorf("marshal auth file: %w", errMarshal)
@@ -1446,6 +1452,9 @@ func applyAuthDisabledState(auth *coreauth.Auth, disabled bool) {
 		auth.Metadata = make(map[string]any)
 	}
 	auth.Metadata["disabled"] = disabled
+	if !disabled {
+		coreauth.ClearCredentialDraft(auth)
+	}
 }
 
 // PatchAuthFileFields updates arbitrary metadata fields of an auth file.

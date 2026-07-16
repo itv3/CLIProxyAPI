@@ -27,6 +27,16 @@ func MarkCredentialDraft(auth *Auth) {
 	auth.Metadata["disabled"] = true
 }
 
+// ClearCredentialDraft removes draft markers after a credential is explicitly enabled.
+func ClearCredentialDraft(auth *Auth) {
+	if auth == nil || auth.Metadata == nil {
+		return
+	}
+	delete(auth.Metadata, MetadataCredentialDraft)
+	delete(auth.Metadata, metadataLegacyProDraft)
+	delete(auth.Metadata, "draft")
+}
+
 // IsCredentialDraft reports whether an auth explicitly carries a draft marker.
 func IsCredentialDraft(auth *Auth) bool {
 	if auth == nil || len(auth.Metadata) == 0 {

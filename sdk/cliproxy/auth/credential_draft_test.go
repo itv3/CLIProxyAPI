@@ -27,3 +27,15 @@ func TestCredentialDraftPolicyAcceptsLegacyMarker(t *testing.T) {
 		t.Fatal("legacy draft marker was not accepted")
 	}
 }
+
+func TestClearCredentialDraftRemovesAllMarkers(t *testing.T) {
+	auth := &Auth{Disabled: true, Metadata: map[string]any{
+		MetadataCredentialDraft: true,
+		"pro_draft":             true,
+		"draft":                 true,
+	}}
+	ClearCredentialDraft(auth)
+	if IsCredentialDraft(auth) {
+		t.Fatal("credential draft markers should be removed")
+	}
+}

@@ -96,6 +96,14 @@ func (h *Handler) ImportVertexCredential(c *gin.Context) {
 		Label:    label,
 		Metadata: metadata,
 	}
+	if credentialDraftRequested(func(key string) string {
+		if value := strings.TrimSpace(c.PostForm(key)); value != "" {
+			return value
+		}
+		return c.Query(key)
+	}) {
+		coreauth.MarkCredentialDraft(record)
+	}
 
 	ctx := context.Background()
 	if reqCtx := c.Request.Context(); reqCtx != nil {
