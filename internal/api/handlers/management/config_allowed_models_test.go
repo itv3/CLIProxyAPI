@@ -65,3 +65,35 @@ func TestPutOpenAICompatibilityKeepsPerKeyAllowedModelsIndependent(t *testing.T)
 		t.Fatalf("per-key allowed models = %#v", entries)
 	}
 }
+
+func TestPatchOpenAICompatibilityUpdatesOneKeyAllowlistWithoutKeysInRequest(t *testing.T) {
+	h := &Handler{
+		cfg: &config.Config{OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:    "shared",
+			BaseURL: "https://example.com/v1",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "key-a", AllowedModels: []string{"old-a"}},
+				{APIKey: "key-b", AllowedModels: []string{"old-b"}},
+			},
+		}}},
+		configFilePath: writeTestConfigFile(t),
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPatch,
+		"/v0/management/openai-compatibility",
+		strings.NewReader(`{"index":0,"key-index":1,"value":{"allowed-models":["new-b"]}}`),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.PatchOpenAICompat(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	entries := h.cfg.OpenAICompatibility[0].APIKeyEntries
+	if !reflect.DeepEqual(entries[0].AllowedModels, []string{"old-a"}) || !reflect.DeepEqual(entries[1].AllowedModels, []string{"new-b"}) {
+		t.Fatalf("per-key allowed models = %#v", entries)
+	}
+}

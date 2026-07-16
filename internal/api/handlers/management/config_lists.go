@@ -647,11 +647,13 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 		APIKeyEntries  *[]config.OpenAICompatibilityAPIKey `json:"api-key-entries"`
 		Models         *[]config.OpenAICompatibilityModel  `json:"models"`
 		Headers        *map[string]string                  `json:"headers"`
+		AllowedModels  *[]string                           `json:"allowed-models"`
 	}
 	var body struct {
-		Name  *string            `json:"name"`
-		Index *int               `json:"index"`
-		Value *openAICompatPatch `json:"value"`
+		Name     *string            `json:"name"`
+		Index    *int               `json:"index"`
+		KeyIndex *int               `json:"key-index"`
+		Value    *openAICompatPatch `json:"value"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
@@ -709,6 +711,13 @@ func (h *Handler) PatchOpenAICompat(c *gin.Context) {
 	}
 	if body.Value.Headers != nil {
 		entry.Headers = config.NormalizeHeaders(*body.Value.Headers)
+	}
+	if body.Value.AllowedModels != nil {
+		if body.KeyIndex == nil || *body.KeyIndex < 0 || *body.KeyIndex >= len(entry.APIKeyEntries) {
+			c.JSON(400, gin.H{"error": "valid key-index is required for allowed-models"})
+			return
+		}
+		entry.APIKeyEntries[*body.KeyIndex].AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	normalizeOpenAICompatibilityEntry(&entry)
 	h.cfg.OpenAICompatibility[targetIndex] = entry

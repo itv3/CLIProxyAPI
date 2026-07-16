@@ -581,6 +581,15 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	entry["allowed_models"] = allowedModels
 	entry["effective_allowed_models"] = effectiveAllowedModels
+	modelMapping := map[string]string{}
+	for _, mapping := range coreauth.OAuthModelAliasesFromAttributes(auth.Attributes) {
+		alias := strings.TrimSpace(mapping.Alias)
+		name := strings.TrimSpace(mapping.Name)
+		if alias != "" && name != "" {
+			modelMapping[alias] = name
+		}
+	}
+	entry["model_mapping"] = modelMapping
 	entry["model_rule_version"] = coreauth.AllowedModelRuleVersion(auth)
 	return entry
 }

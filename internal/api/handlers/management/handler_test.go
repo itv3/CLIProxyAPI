@@ -64,6 +64,12 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 		if got := rec.Header().Get("X-CPA-SUPPORT-PLUGIN"); got != pluginhost.SupportPluginHeaderValue() {
 			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
 		}
+		if got := rec.Header().Get("X-CPA-SUPPORT-CREDENTIAL-DRAFT"); got != "true" {
+			t.Fatalf("X-CPA-SUPPORT-CREDENTIAL-DRAFT = %q, want true", got)
+		}
+		if got := rec.Header().Get("X-CPA-SUPPORT-ALLOWED-MODELS"); got != "true" {
+			t.Fatalf("X-CPA-SUPPORT-ALLOWED-MODELS = %q, want true", got)
+		}
 	})
 
 	t.Run("valid key", func(t *testing.T) {
