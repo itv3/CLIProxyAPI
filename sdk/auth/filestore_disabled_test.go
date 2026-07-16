@@ -62,3 +62,61 @@ func TestFileTokenStore_Save_DisabledPersistsFlagForTokenStorage(t *testing.T) {
 		t.Fatalf("disabled=%v, want true (raw=%s)", meta["disabled"], string(raw))
 	}
 }
+
+func TestFileTokenStore_Save_DraftCreatesMissingDisabledAuth(t *testing.T) {
+	ctx := context.Background()
+	baseDir := t.TempDir()
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+
+	draft := &cliproxyauth.Auth{
+		ID:       "draft.json",
+		Provider: "test",
+		FileName: "draft.json",
+		Metadata: map[string]any{"type": "test"},
+	}
+	cliproxyauth.MarkCredentialDraft(draft)
+
+	path, errSave := store.Save(ctx, draft)
+	if errSave != nil {
+		t.Fatalf("Save() draft error: %v", errSave)
+	}
+	if path != filepath.Join(baseDir, "draft.json") {
+		t.Fatalf("draft path = %q", path)
+	}
+	raw, errRead := os.ReadFile(path)
+	if errRead != nil {
+		t.Fatalf("read draft: %v", errRead)
+	}
+	var metadata map[string]any
+	if errUnmarshal := json.Unmarshal(raw, &metadata); errUnmarshal != nil {
+		t.Fatalf("unmarshal draft: %v", errUnmarshal)
+	}
+	if metadata["disabled"] != true || metadata["pro_draft"] != true || metadata[cliproxyauth.MetadataCredentialDraft] != true {
+		t.Fatalf("draft metadata = %#v", metadata)
+	}
+}
+
+func TestFileTokenStore_Save_OrdinaryMissingDisabledAuthIsSkipped(t *testing.T) {
+	baseDir := t.TempDir()
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       "ordinary.json",
+		Provider: "test",
+		FileName: "ordinary.json",
+		Disabled: true,
+		Metadata: map[string]any{"type": "test", "disabled": true},
+	}
+
+	path, errSave := store.Save(context.Background(), auth)
+	if errSave != nil {
+		t.Fatalf("Save() ordinary disabled error: %v", errSave)
+	}
+	if path != "" {
+		t.Fatalf("ordinary disabled path = %q, want empty", path)
+	}
+	if _, errStat := os.Stat(filepath.Join(baseDir, "ordinary.json")); !os.IsNotExist(errStat) {
+		t.Fatalf("ordinary disabled auth was recreated, stat error = %v", errStat)
+	}
+}

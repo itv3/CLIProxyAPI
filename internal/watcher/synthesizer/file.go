@@ -94,6 +94,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 			}
 			perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 			perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+			perAccountAllowed := extractAllowedModelsFromMetadata(metadata)
 			disabled, _ := metadata["disabled"].(bool)
 			for index, auth := range auths {
 				if auth == nil {
@@ -119,6 +120,8 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 					auth.Metadata["disabled"] = true
 				}
 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
+				coreauth.SetAllowedModelsAttribute(auth, perAccountAllowed)
+				coreauth.SetAllowedModelAliasesAttribute(auth, oauthModelAliasNames(perAccountModelAliases))
 				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
 				coreauth.ApplyCustomHeadersFromMetadata(auth)
 			}
@@ -166,6 +169,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	// Read per-account excluded models from the OAuth JSON file.
 	perAccountExcluded := extractExcludedModelsFromMetadata(metadata)
 	perAccountModelAliases := extractOAuthModelAliasesFromMetadata(metadata)
+	perAccountAllowed := extractAllowedModelsFromMetadata(metadata)
 
 	a := &coreauth.Auth{
 		ID:       id,
@@ -206,6 +210,8 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) []
 	}
 	coreauth.ApplyCustomHeadersFromMetadata(a)
 	coreauth.SetOAuthModelAliasesAttribute(a, perAccountModelAliases)
+	coreauth.SetAllowedModelsAttribute(a, perAccountAllowed)
+	coreauth.SetAllowedModelAliasesAttribute(a, oauthModelAliasNames(perAccountModelAliases))
 	ApplyAuthExcludedModelsMeta(a, cfg, perAccountExcluded, "oauth")
 	// For codex auth files, extract plan_type from the JWT id_token.
 	if provider == "codex" {
@@ -313,4 +319,59 @@ func extractExcludedModelsFromMetadata(metadata map[string]any) []string {
 		}
 	}
 	return result
+}
+
+// extractAllowedModelsFromMetadata reads a per-account allowlist from OAuth metadata.
+// Both snake_case and kebab-case keys are accepted for compatibility with JSON and YAML fields.
+func extractAllowedModelsFromMetadata(metadata map[string]any) []string {
+	if metadata == nil {
+		return nil
+	}
+	raw, ok := metadata["allowed_models"]
+	if !ok {
+		raw, ok = metadata["allowed-models"]
+	}
+	if !ok || raw == nil {
+		return nil
+	}
+	models := make([]string, 0)
+	switch value := raw.(type) {
+	case []string:
+		models = append(models, value...)
+	case []any:
+		for _, item := range value {
+			if model, okString := item.(string); okString {
+				models = append(models, model)
+			}
+		}
+	case string:
+		models = append(models, strings.Split(value, ",")...)
+	default:
+		return nil
+	}
+	return coreauth.NormalizeAllowedModels(models)
+}
+
+func oauthModelAliasNames(aliases []config.OAuthModelAlias) []string {
+	if len(aliases) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(aliases))
+	for i := range aliases {
+		if alias := strings.TrimSpace(aliases[i].Alias); alias != "" {
+			out = append(out, alias)
+		}
+	}
+	return out
+}
+
+// ApplyAuthFileModelPolicy refreshes runtime model-policy attributes from auth metadata.
+func ApplyAuthFileModelPolicy(auth *coreauth.Auth, metadata map[string]any) {
+	if auth == nil {
+		return
+	}
+	aliases := extractOAuthModelAliasesFromMetadata(metadata)
+	coreauth.SetOAuthModelAliasesAttribute(auth, aliases)
+	coreauth.SetAllowedModelsAttribute(auth, extractAllowedModelsFromMetadata(metadata))
+	coreauth.SetAllowedModelAliasesAttribute(auth, oauthModelAliasNames(aliases))
 }

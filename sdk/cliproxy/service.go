@@ -1127,6 +1127,7 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		clone.ID = modelID
 		normalizedModels = append(normalizedModels, &clone)
 	}
+	normalizedModels = filterAllowedModelsForAuth(a, normalizedModels)
 	if len(normalizedModels) == 0 {
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return

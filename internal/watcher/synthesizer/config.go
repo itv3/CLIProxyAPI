@@ -103,6 +103,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		applyAllowedModelAttributes(a, entry.AllowedModels, mappedModelAliases(entry.Models))
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -162,6 +163,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		applyAllowedModelAttributes(a, ck.AllowedModels, mappedModelAliases(ck.Models))
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -229,6 +231,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		applyAllowedModelAttributes(a, entry.AllowedModels, mappedModelAliases(entry.Models))
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -298,6 +301,7 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 				CreatedAt:  now,
 				UpdatedAt:  now,
 			}
+			applyAllowedModelAttributes(a, entry.AllowedModels, mappedModelAliases(compat.Models))
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil
 			}
@@ -389,7 +393,35 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			UpdatedAt:  now,
 		}
 		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
+		applyAllowedModelAttributes(a, compat.AllowedModels, mappedModelAliases(compat.Models))
 		out = append(out, a)
 	}
 	return out
+}
+
+type mappedModel interface {
+	GetName() string
+	GetAlias() string
+}
+
+func mappedModelAliases[T mappedModel](models []T) []string {
+	if len(models) == 0 {
+		return nil
+	}
+	aliases := make([]string, 0, len(models))
+	for i := range models {
+		alias := strings.TrimSpace(models[i].GetAlias())
+		if alias == "" {
+			alias = strings.TrimSpace(models[i].GetName())
+		}
+		if alias != "" {
+			aliases = append(aliases, alias)
+		}
+	}
+	return aliases
+}
+
+func applyAllowedModelAttributes(auth *coreauth.Auth, allowed, aliases []string) {
+	coreauth.SetAllowedModelsAttribute(auth, allowed)
+	coreauth.SetAllowedModelAliasesAttribute(auth, aliases)
 }

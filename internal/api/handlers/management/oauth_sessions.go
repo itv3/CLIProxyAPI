@@ -1,14 +1,18 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 const (
@@ -31,13 +35,14 @@ var (
 )
 
 type oauthSession struct {
-	Provider  string
-	Status    string
-	Source    string
-	Metadata  map[string]any
-	Completed bool
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	Provider        string
+	Status          string
+	Source          string
+	Metadata        map[string]any
+	CredentialDraft bool
+	Completed       bool
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
 }
 
 type oauthSessionStore struct {
@@ -71,6 +76,10 @@ func (s *oauthSessionStore) purgeExpiredLocked(now time.Time) {
 }
 
 func (s *oauthSessionStore) Register(state, provider string) {
+	s.RegisterWithOptions(state, provider, false)
+}
+
+func (s *oauthSessionStore) RegisterWithOptions(state, provider string, credentialDraft bool) {
 	state = strings.TrimSpace(state)
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if state == "" || provider == "" {
@@ -83,15 +92,20 @@ func (s *oauthSessionStore) Register(state, provider string) {
 
 	s.purgeExpiredLocked(now)
 	s.sessions[state] = oauthSession{
-		Provider:  provider,
-		Status:    "",
-		Source:    oauthSessionSourceBuiltin,
-		CreatedAt: now,
-		ExpiresAt: now.Add(s.ttl),
+		Provider:        provider,
+		Status:          "",
+		Source:          oauthSessionSourceBuiltin,
+		CredentialDraft: credentialDraft,
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(s.ttl),
 	}
 }
 
 func (s *oauthSessionStore) RegisterPlugin(state, provider string, metadata map[string]any) error {
+	return s.RegisterPluginWithOptions(state, provider, metadata, false)
+}
+
+func (s *oauthSessionStore) RegisterPluginWithOptions(state, provider string, metadata map[string]any, credentialDraft bool) error {
 	state = strings.TrimSpace(state)
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if state == "" || provider == "" {
@@ -110,12 +124,13 @@ func (s *oauthSessionStore) RegisterPlugin(state, provider string, metadata map[
 		return errOAuthSessionExists
 	}
 	s.sessions[state] = oauthSession{
-		Provider:  provider,
-		Status:    "",
-		Source:    oauthSessionSourcePlugin,
-		Metadata:  cloneOAuthSessionMetadata(metadata),
-		CreatedAt: now,
-		ExpiresAt: now.Add(s.ttl),
+		Provider:        provider,
+		Status:          "",
+		Source:          oauthSessionSourcePlugin,
+		Metadata:        cloneOAuthSessionMetadata(metadata),
+		CredentialDraft: credentialDraft,
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(s.ttl),
 	}
 	return nil
 }
@@ -263,8 +278,16 @@ var oauthSessions = newOAuthSessionStore(oauthSessionTTL)
 
 func RegisterOAuthSession(state, provider string) { oauthSessions.Register(state, provider) }
 
+func RegisterOAuthSessionWithOptions(state, provider string, credentialDraft bool) {
+	oauthSessions.RegisterWithOptions(state, provider, credentialDraft)
+}
+
 func RegisterPluginOAuthSession(state, provider string, metadata map[string]any) error {
 	return oauthSessions.RegisterPlugin(state, provider, metadata)
+}
+
+func RegisterPluginOAuthSessionWithOptions(state, provider string, metadata map[string]any, credentialDraft bool) error {
+	return oauthSessions.RegisterPluginWithOptions(state, provider, metadata, credentialDraft)
 }
 
 func SetOAuthSessionError(state, message string) { oauthSessions.SetError(state, message) }
@@ -297,6 +320,49 @@ func GetOAuthSessionDetails(state string) (provider string, status string, isPlu
 
 func IsOAuthSessionPending(state, provider string) bool {
 	return oauthSessions.IsPending(state, provider)
+}
+
+type oauthSessionStateContextKey struct{}
+
+func withOAuthSessionState(ctx context.Context, state string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, oauthSessionStateContextKey{}, strings.TrimSpace(state))
+}
+
+func oauthSessionCredentialDraftHook(ctx context.Context, auth *coreauth.Auth) error {
+	if auth == nil || ctx == nil {
+		return nil
+	}
+	state, _ := ctx.Value(oauthSessionStateContextKey{}).(string)
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return nil
+	}
+	session, ok := oauthSessions.Get(state)
+	if !ok || session.Completed || !session.CredentialDraft {
+		return nil
+	}
+	coreauth.MarkCredentialDraft(auth)
+	return nil
+}
+
+func credentialDraftRequested(queryValue func(string) string) bool {
+	if queryValue == nil {
+		return false
+	}
+	for _, key := range []string{"credential_draft", "draft", "pro_draft"} {
+		value := strings.TrimSpace(queryValue(key))
+		if value == "" {
+			continue
+		}
+		parsed, errParse := strconv.ParseBool(value)
+		if errParse == nil && parsed {
+			return true
+		}
+	}
+	return false
 }
 
 // guardOAuthSessionPendingForSave returns errOAuthSessionNotPending when the session

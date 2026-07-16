@@ -286,6 +286,9 @@ func SetOAuthModelAliasesAttribute(auth *Auth, aliases []internalconfig.OAuthMod
 	}
 	aliases = sanitizeOAuthModelAliases(aliases)
 	if len(aliases) == 0 {
+		if auth.Attributes != nil {
+			delete(auth.Attributes, oauthModelAliasesAttributeKey)
+		}
 		return
 	}
 	data, errMarshal := json.Marshal(aliases)

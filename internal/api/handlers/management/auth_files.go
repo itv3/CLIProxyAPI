@@ -307,12 +307,13 @@ func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid oauth state"})
 		return true
 	}
-	if errRegister := RegisterPluginOAuthSession(state, provider, resp.Metadata); errRegister != nil {
+	credentialDraft := credentialDraftRequested(c.Query)
+	if errRegister := RegisterPluginOAuthSessionWithOptions(state, provider, resp.Metadata, credentialDraft); errRegister != nil {
 		log.WithError(errRegister).WithField("provider", provider).Error("failed to register plugin oauth session")
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to generate authorization url"})
 		return true
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": resp.URL, "state": state})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": resp.URL, "state": state, "credential_draft": credentialDraft})
 	return true
 }
 
@@ -567,6 +568,20 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	policy := coreauth.AllowedModelPolicyForAuth(auth)
+	allowedModels := policy.Patterns
+	if allowedModels == nil {
+		allowedModels = []string{}
+	}
+	effectiveAllowedModels := append([]string(nil), policy.Patterns...)
+	effectiveAllowedModels = append(effectiveAllowedModels, policy.Aliases...)
+	effectiveAllowedModels = coreauth.NormalizeAllowedModels(effectiveAllowedModels)
+	if effectiveAllowedModels == nil {
+		effectiveAllowedModels = []string{}
+	}
+	entry["allowed_models"] = allowedModels
+	entry["effective_allowed_models"] = effectiveAllowedModels
+	entry["model_rule_version"] = coreauth.AllowedModelRuleVersion(auth)
 	return entry
 }
 
@@ -1664,6 +1679,18 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
+	if _, allowedUnderscore := touchedRoots["allowed_models"]; allowedUnderscore {
+		synthesizer.ApplyAuthFileModelPolicy(auth, auth.Metadata)
+	}
+	if _, allowedKebab := touchedRoots["allowed-models"]; allowedKebab {
+		synthesizer.ApplyAuthFileModelPolicy(auth, auth.Metadata)
+	}
+	if _, aliasesUnderscore := touchedRoots["model_aliases"]; aliasesUnderscore {
+		synthesizer.ApplyAuthFileModelPolicy(auth, auth.Metadata)
+	}
+	if _, aliasesKebab := touchedRoots["model-aliases"]; aliasesKebab {
+		synthesizer.ApplyAuthFileModelPolicy(auth, auth.Metadata)
+	}
 }
 
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
@@ -1884,13 +1911,19 @@ func (h *Handler) tokenStoreWithBaseDir() coreauth.Store {
 	return store
 }
 
-func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (string, error) {
+func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth, oauthStates ...string) (string, error) {
 	if record == nil {
 		return "", fmt.Errorf("token record is nil")
 	}
 	store := h.tokenStoreWithBaseDir()
 	if store == nil {
 		return "", fmt.Errorf("token store unavailable")
+	}
+	if len(oauthStates) > 0 && strings.TrimSpace(oauthStates[0]) != "" {
+		ctx = withOAuthSessionState(ctx, oauthStates[0])
+	}
+	if errDraft := oauthSessionCredentialDraftHook(ctx, record); errDraft != nil {
+		return "", fmt.Errorf("credential draft hook failed: %w", errDraft)
 	}
 	if h.postAuthHook != nil {
 		if err := h.postAuthHook(ctx, record); err != nil {
@@ -1942,7 +1975,8 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "anthropic")
+	credentialDraft := credentialDraftRequested(c.Query)
+	RegisterOAuthSessionWithOptions(state, "anthropic", credentialDraft)
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
@@ -2038,7 +2072,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
 		if errGuard := guardOAuthSessionPendingForSave(state, "anthropic"); errGuard != nil {
 			return
 		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		savedPath, errSave := h.saveTokenRecord(ctx, record, state)
 		if errSave != nil {
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
@@ -2089,7 +2123,8 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		return
 	}
 
-	RegisterOAuthSession(state, "codex")
+	credentialDraft := credentialDraftRequested(c.Query)
+	RegisterOAuthSessionWithOptions(state, "codex", credentialDraft)
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
@@ -2187,7 +2222,7 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		if errGuard := guardOAuthSessionPendingForSave(state, "codex"); errGuard != nil {
 			return
 		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		savedPath, errSave := h.saveTokenRecord(ctx, record, state)
 		if errSave != nil {
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
@@ -2222,7 +2257,8 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 	redirectURI := fmt.Sprintf("http://localhost:%d/oauth-callback", antigravity.CallbackPort)
 	authURL := authSvc.BuildAuthURL(state, redirectURI)
 
-	RegisterOAuthSession(state, "antigravity")
+	credentialDraft := credentialDraftRequested(c.Query)
+	RegisterOAuthSessionWithOptions(state, "antigravity", credentialDraft)
 
 	isWebUI := isWebUIRequest(c)
 	var forwarder *callbackForwarder
@@ -2353,7 +2389,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
 		if errGuard := guardOAuthSessionPendingForSave(state, "antigravity"); errGuard != nil {
 			return
 		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		savedPath, errSave := h.saveTokenRecord(ctx, record, state)
 		if errSave != nil {
 			log.Errorf("Failed to save token to file: %v", errSave)
 			SetOAuthSessionError(state, "Failed to save token to file")
@@ -2391,7 +2427,8 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		authURL = strings.TrimSpace(deviceFlow.VerificationURI)
 	}
 
-	RegisterOAuthSession(state, "xai")
+	credentialDraft := credentialDraftRequested(c.Query)
+	RegisterOAuthSessionWithOptions(state, "xai", credentialDraft)
 
 	go func() {
 		pollCtx, cancelPoll := context.WithCancel(ctx)
@@ -2460,7 +2497,7 @@ func (h *Handler) RequestXAIToken(c *gin.Context) {
 		if errGuard := guardOAuthSessionPendingForSave(state, "xai"); errGuard != nil {
 			return
 		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		savedPath, errSave := h.saveTokenRecord(ctx, record, state)
 		if errSave != nil {
 			log.Errorf("Failed to save xAI token to file: %v", errSave)
 			SetOAuthSessionError(state, "Failed to save token to file")
@@ -2506,7 +2543,8 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		authURL = deviceFlow.VerificationURI
 	}
 
-	RegisterOAuthSession(state, "kimi")
+	credentialDraft := credentialDraftRequested(c.Query)
+	RegisterOAuthSessionWithOptions(state, "kimi", credentialDraft)
 
 	go func() {
 		pollCtx, cancelPoll := context.WithCancel(ctx)
@@ -2558,7 +2596,7 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		if errGuard := guardOAuthSessionPendingForSave(state, "kimi"); errGuard != nil {
 			return
 		}
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		savedPath, errSave := h.saveTokenRecord(ctx, record, state)
 		if errSave != nil {
 			log.Errorf("Failed to save authentication tokens: %v", errSave)
 			SetOAuthSessionError(state, "Failed to save authentication tokens")
@@ -2676,7 +2714,7 @@ func (h *Handler) GetAuthStatus(c *gin.Context) {
 					c.JSON(http.StatusOK, gin.H{"status": "error", "error": "Authentication failed"})
 					return
 				}
-				if errSave := h.savePluginLoginRecords(ctx, records); errSave != nil {
+				if errSave := h.savePluginLoginRecords(ctx, records, state); errSave != nil {
 					log.WithError(errSave).WithField("provider", provider).Error("failed to save plugin auth tokens")
 					SetOAuthSessionError(state, "Failed to save authentication tokens")
 					c.JSON(http.StatusOK, gin.H{"status": "error", "error": "Failed to save authentication tokens"})
@@ -2713,10 +2751,10 @@ func pluginLoginPollAuths(host *pluginhost.Host, resp pluginapi.AuthLoginPollRes
 	return records
 }
 
-func (h *Handler) savePluginLoginRecords(ctx context.Context, records []*coreauth.Auth) error {
+func (h *Handler) savePluginLoginRecords(ctx context.Context, records []*coreauth.Auth, oauthStates ...string) error {
 	savedPaths := make([]string, 0, len(records))
 	for _, record := range records {
-		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		savedPath, errSave := h.saveTokenRecord(ctx, record, oauthStates...)
 		if strings.TrimSpace(savedPath) != "" {
 			savedPaths = append(savedPaths, savedPath)
 		}

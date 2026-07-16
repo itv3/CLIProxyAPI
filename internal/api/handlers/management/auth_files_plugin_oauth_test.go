@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -80,6 +81,64 @@ func TestSavePluginLoginRecordsRollsBackSavedAuthsOnFailure(t *testing.T) {
 	}
 	if !store.deleted["geminicli.json"] || !store.deleted["geminicli-project-a.json"] {
 		t.Fatalf("deleted = %#v, want both saved auths rolled back", store.deleted)
+	}
+}
+
+func TestSavePluginLoginRecordsRestoresCredentialDraftIntent(t *testing.T) {
+	sessions := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, sessions)
+	if errRegister := sessions.RegisterPluginWithOptions("plugin-draft-state", "gemini-cli", nil, true); errRegister != nil {
+		t.Fatalf("register plugin draft session: %v", errRegister)
+	}
+
+	store := &pluginLoginRollbackStore{}
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
+	h.tokenStore = store
+	hookObservedDraft := false
+	h.postAuthHook = func(_ context.Context, auth *coreauth.Auth) error {
+		hookObservedDraft = auth.Disabled && coreauth.IsCredentialDraft(auth)
+		return nil
+	}
+	record := &coreauth.Auth{
+		ID:       "geminicli.json",
+		FileName: "geminicli.json",
+		Provider: "gemini-cli",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"type": "gemini-cli"},
+	}
+
+	if errSave := h.savePluginLoginRecords(context.Background(), []*coreauth.Auth{record}, "plugin-draft-state"); errSave != nil {
+		t.Fatalf("savePluginLoginRecords() draft error: %v", errSave)
+	}
+	if !hookObservedDraft {
+		t.Fatal("post-auth hook did not observe restored draft intent")
+	}
+	if !record.Disabled || record.Status != coreauth.StatusDisabled || !coreauth.IsCredentialDraft(record) {
+		t.Fatalf("saved plugin record was not disabled draft: %#v", record)
+	}
+}
+
+func TestSavePluginLoginRecordsWithoutDraftIntentStaysActive(t *testing.T) {
+	sessions := newOAuthSessionStore(time.Minute)
+	replaceOAuthSessionStoreForTest(t, sessions)
+	if errRegister := sessions.RegisterPlugin("plugin-normal-state", "gemini-cli", nil); errRegister != nil {
+		t.Fatalf("register plugin session: %v", errRegister)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, nil)
+	h.tokenStore = &pluginLoginRollbackStore{}
+	record := &coreauth.Auth{
+		ID:       "geminicli.json",
+		FileName: "geminicli.json",
+		Provider: "gemini-cli",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{"type": "gemini-cli"},
+	}
+	if errSave := h.savePluginLoginRecords(context.Background(), []*coreauth.Auth{record}, "plugin-normal-state"); errSave != nil {
+		t.Fatalf("savePluginLoginRecords() normal error: %v", errSave)
+	}
+	if record.Disabled || coreauth.IsCredentialDraft(record) {
+		t.Fatalf("normal plugin record became a draft: %#v", record)
 	}
 }
 

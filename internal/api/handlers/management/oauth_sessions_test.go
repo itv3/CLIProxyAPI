@@ -27,6 +27,33 @@ func TestOAuthSessionStoreCompleteKeepsShortLivedSession(t *testing.T) {
 	}
 }
 
+func TestOAuthSessionStoreRetainsCredentialDraftIntent(t *testing.T) {
+	store := newOAuthSessionStore(time.Minute)
+	store.RegisterWithOptions("builtin-draft", "codex", true)
+	if session, ok := store.Get("builtin-draft"); !ok || !session.CredentialDraft {
+		t.Fatalf("builtin draft session = %#v, ok=%t", session, ok)
+	}
+	if errRegister := store.RegisterPluginWithOptions("plugin-draft", "gemini-cli", map[string]any{"flow": "device"}, true); errRegister != nil {
+		t.Fatalf("register plugin draft: %v", errRegister)
+	}
+	pluginSession, ok := store.Get("plugin-draft")
+	if !ok || !pluginSession.CredentialDraft || pluginSession.Metadata["flow"] != "device" {
+		t.Fatalf("plugin draft session = %#v, ok=%t", pluginSession, ok)
+	}
+}
+
+func TestCredentialDraftRequestedAcceptsGenericAndLegacyFlags(t *testing.T) {
+	for _, key := range []string{"credential_draft", "draft", "pro_draft"} {
+		values := map[string]string{key: "true"}
+		if !credentialDraftRequested(func(name string) string { return values[name] }) {
+			t.Fatalf("credentialDraftRequested() rejected %q", key)
+		}
+	}
+	if credentialDraftRequested(func(string) string { return "false" }) {
+		t.Fatal("credentialDraftRequested() accepted false")
+	}
+}
+
 func TestOAuthSessionStoreCompleteDoesNotExtendCompletedSession(t *testing.T) {
 	store := newOAuthSessionStore(time.Minute)
 	store.Register("completed-state", "codex")

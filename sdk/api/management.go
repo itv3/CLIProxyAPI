@@ -81,6 +81,11 @@ func RegisterOAuthSession(state, provider string) {
 	internalmanagement.RegisterOAuthSession(state, provider)
 }
 
+// RegisterOAuthSessionWithOptions records a pending OAuth callback state with draft intent.
+func RegisterOAuthSessionWithOptions(state, provider string, credentialDraft bool) {
+	internalmanagement.RegisterOAuthSessionWithOptions(state, provider, credentialDraft)
+}
+
 // SetOAuthSessionError stores an OAuth session error message.
 func SetOAuthSessionError(state, message string) {
 	internalmanagement.SetOAuthSessionError(state, message)

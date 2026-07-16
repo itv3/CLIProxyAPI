@@ -6,49 +6,57 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
 type geminiKeyWithAuthIndex struct {
 	config.GeminiKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex        string `json:"auth-index,omitempty"`
+	ModelRuleVersion string `json:"model-rule-version,omitempty"`
 }
 
 type claudeKeyWithAuthIndex struct {
 	config.ClaudeKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex        string `json:"auth-index,omitempty"`
+	ModelRuleVersion string `json:"model-rule-version,omitempty"`
 }
 
 type codexKeyWithAuthIndex struct {
 	config.CodexKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex        string `json:"auth-index,omitempty"`
+	ModelRuleVersion string `json:"model-rule-version,omitempty"`
 }
 
 type xaiKeyWithAuthIndex struct {
 	config.XAIKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex        string `json:"auth-index,omitempty"`
+	ModelRuleVersion string `json:"model-rule-version,omitempty"`
 }
 
 type vertexCompatKeyWithAuthIndex struct {
 	config.VertexCompatKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex        string `json:"auth-index,omitempty"`
+	ModelRuleVersion string `json:"model-rule-version,omitempty"`
 }
 
 type openAICompatibilityAPIKeyWithAuthIndex struct {
 	config.OpenAICompatibilityAPIKey
-	AuthIndex string `json:"auth-index,omitempty"`
+	AuthIndex        string `json:"auth-index,omitempty"`
+	ModelRuleVersion string `json:"model-rule-version,omitempty"`
 }
 
 type openAICompatibilityWithAuthIndex struct {
-	Name           string                                   `json:"name"`
-	Priority       int                                      `json:"priority,omitempty"`
-	Disabled       bool                                     `json:"disabled"`
-	Prefix         string                                   `json:"prefix,omitempty"`
-	BaseURL        string                                   `json:"base-url"`
-	APIKeyEntries  []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
-	Models         []config.OpenAICompatibilityModel        `json:"models,omitempty"`
-	Headers        map[string]string                        `json:"headers,omitempty"`
-	DisableCooling bool                                     `json:"disable-cooling,omitempty"`
-	AuthIndex      string                                   `json:"auth-index,omitempty"`
+	Name             string                                   `json:"name"`
+	Priority         int                                      `json:"priority,omitempty"`
+	Disabled         bool                                     `json:"disabled"`
+	Prefix           string                                   `json:"prefix,omitempty"`
+	BaseURL          string                                   `json:"base-url"`
+	APIKeyEntries    []openAICompatibilityAPIKeyWithAuthIndex `json:"api-key-entries,omitempty"`
+	Models           []config.OpenAICompatibilityModel        `json:"models,omitempty"`
+	Headers          map[string]string                        `json:"headers,omitempty"`
+	DisableCooling   bool                                     `json:"disable-cooling,omitempty"`
+	AuthIndex        string                                   `json:"auth-index,omitempty"`
+	ModelRuleVersion string                                   `json:"model-rule-version,omitempty"`
 }
 
 func (h *Handler) liveAuthIndexByID() map[string]string {
@@ -83,11 +91,32 @@ func (h *Handler) liveAuthIndexByID() map[string]string {
 	return out
 }
 
+func (h *Handler) liveModelRuleVersionByID() map[string]string {
+	out := map[string]string{}
+	if h == nil {
+		return out
+	}
+	h.mu.Lock()
+	manager := h.authManager
+	h.mu.Unlock()
+	if manager == nil {
+		return out
+	}
+	for _, auth := range manager.List() {
+		if auth == nil || strings.TrimSpace(auth.ID) == "" {
+			continue
+		}
+		out[auth.ID] = coreauth.AllowedModelRuleVersion(auth)
+	}
+	return out
+}
+
 func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	if h == nil {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -100,13 +129,15 @@ func (h *Handler) geminiKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	for i := range h.cfg.GeminiKey {
 		entry := h.cfg.GeminiKey[i]
 		authIndex := ""
+		authID := ""
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("gemini:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			authID, _ = idGen.Next("gemini:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[authID]
 		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:        entry,
+			AuthIndex:        authIndex,
+			ModelRuleVersion: liveRuleVersionByID[authID],
 		}
 	}
 	return out
@@ -117,6 +148,7 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -129,13 +161,15 @@ func (h *Handler) interactionsKeysWithAuthIndex() []geminiKeyWithAuthIndex {
 	for i := range h.cfg.InteractionsKey {
 		entry := h.cfg.InteractionsKey[i]
 		authIndex := ""
+		authID := ""
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			authID, _ = idGen.Next("gemini-interactions:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[authID]
 		}
 		out[i] = geminiKeyWithAuthIndex{
-			GeminiKey: entry,
-			AuthIndex: authIndex,
+			GeminiKey:        entry,
+			AuthIndex:        authIndex,
+			ModelRuleVersion: liveRuleVersionByID[authID],
 		}
 	}
 	return out
@@ -146,6 +180,7 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -158,13 +193,15 @@ func (h *Handler) claudeKeysWithAuthIndex() []claudeKeyWithAuthIndex {
 	for i := range h.cfg.ClaudeKey {
 		entry := h.cfg.ClaudeKey[i]
 		authIndex := ""
+		authID := ""
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("claude:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			authID, _ = idGen.Next("claude:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[authID]
 		}
 		out[i] = claudeKeyWithAuthIndex{
-			ClaudeKey: entry,
-			AuthIndex: authIndex,
+			ClaudeKey:        entry,
+			AuthIndex:        authIndex,
+			ModelRuleVersion: liveRuleVersionByID[authID],
 		}
 	}
 	return out
@@ -175,6 +212,7 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -187,13 +225,15 @@ func (h *Handler) codexKeysWithAuthIndex() []codexKeyWithAuthIndex {
 	for i := range h.cfg.CodexKey {
 		entry := h.cfg.CodexKey[i]
 		authIndex := ""
+		authID := ""
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("codex:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			authID, _ = idGen.Next("codex:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[authID]
 		}
 		out[i] = codexKeyWithAuthIndex{
-			CodexKey:  entry,
-			AuthIndex: authIndex,
+			CodexKey:         entry,
+			AuthIndex:        authIndex,
+			ModelRuleVersion: liveRuleVersionByID[authID],
 		}
 	}
 	return out
@@ -204,6 +244,7 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -216,13 +257,15 @@ func (h *Handler) xaiKeysWithAuthIndex() []xaiKeyWithAuthIndex {
 	for i := range h.cfg.XAIKey {
 		entry := h.cfg.XAIKey[i]
 		authIndex := ""
+		authID := ""
 		if key := strings.TrimSpace(entry.APIKey); key != "" {
-			id, _ := idGen.Next("xai:apikey", key, entry.BaseURL)
-			authIndex = liveIndexByID[id]
+			authID, _ = idGen.Next("xai:apikey", key, entry.BaseURL)
+			authIndex = liveIndexByID[authID]
 		}
 		out[i] = xaiKeyWithAuthIndex{
-			XAIKey:    entry,
-			AuthIndex: authIndex,
+			XAIKey:           entry,
+			AuthIndex:        authIndex,
+			ModelRuleVersion: liveRuleVersionByID[authID],
 		}
 	}
 	return out
@@ -233,6 +276,7 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -247,8 +291,9 @@ func (h *Handler) vertexCompatKeysWithAuthIndex() []vertexCompatKeyWithAuthIndex
 		id, _ := idGen.Next("vertex:apikey", entry.APIKey, entry.BaseURL, entry.ProxyURL)
 		authIndex := liveIndexByID[id]
 		out[i] = vertexCompatKeyWithAuthIndex{
-			VertexCompatKey: entry,
-			AuthIndex:       authIndex,
+			VertexCompatKey:  entry,
+			AuthIndex:        authIndex,
+			ModelRuleVersion: liveRuleVersionByID[id],
 		}
 	}
 	return out
@@ -259,6 +304,7 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		return nil
 	}
 	liveIndexByID := h.liveAuthIndexByID()
+	liveRuleVersionByID := h.liveModelRuleVersionByID()
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -291,6 +337,7 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 		if len(entry.APIKeyEntries) == 0 {
 			id, _ := idGen.Next(idKind, entry.BaseURL)
 			response.AuthIndex = liveIndexByID[id]
+			response.ModelRuleVersion = liveRuleVersionByID[id]
 		} else {
 			response.APIKeyEntries = make([]openAICompatibilityAPIKeyWithAuthIndex, len(entry.APIKeyEntries))
 			for j := range entry.APIKeyEntries {
@@ -299,6 +346,7 @@ func (h *Handler) openAICompatibilityWithAuthIndex() []openAICompatibilityWithAu
 				response.APIKeyEntries[j] = openAICompatibilityAPIKeyWithAuthIndex{
 					OpenAICompatibilityAPIKey: apiKeyEntry,
 					AuthIndex:                 liveIndexByID[id],
+					ModelRuleVersion:          liveRuleVersionByID[id],
 				}
 			}
 		}

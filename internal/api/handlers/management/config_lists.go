@@ -153,6 +153,7 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 		ProxyURL       *string            `json:"proxy-url"`
 		Headers        *map[string]string `json:"headers"`
 		ExcludedModels *[]string          `json:"excluded-models"`
+		AllowedModels  *[]string          `json:"allowed-models"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -211,6 +212,9 @@ func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	h.cfg.GeminiKey[targetIndex] = entry
 	h.cfg.SanitizeGeminiKeys()
@@ -312,6 +316,7 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 		ProxyURL       *string            `json:"proxy-url"`
 		Headers        *map[string]string `json:"headers"`
 		ExcludedModels *[]string          `json:"excluded-models"`
+		AllowedModels  *[]string          `json:"allowed-models"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -371,6 +376,9 @@ func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	h.cfg.InteractionsKey[targetIndex] = entry
 	h.cfg.SanitizeInteractionsKeys()
@@ -475,6 +483,7 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 		Models                  *[]config.ClaudeModel `json:"models"`
 		Headers                 *map[string]string    `json:"headers"`
 		ExcludedModels          *[]string             `json:"excluded-models"`
+		AllowedModels           *[]string             `json:"allowed-models"`
 		RebuildMidSystemMessage *bool                 `json:"rebuild-mid-system-message"`
 	}
 	var body struct {
@@ -528,6 +537,9 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	if body.Value.RebuildMidSystemMessage != nil {
 		entry.RebuildMidSystemMessage = *body.Value.RebuildMidSystemMessage
@@ -775,6 +787,7 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 		Headers        *map[string]string          `json:"headers"`
 		Models         *[]config.VertexCompatModel `json:"models"`
 		ExcludedModels *[]string                   `json:"excluded-models"`
+		AllowedModels  *[]string                   `json:"allowed-models"`
 	}
 	var body struct {
 		Index *int               `json:"index"`
@@ -843,6 +856,9 @@ func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	normalizeVertexCompatKey(&entry)
 	h.cfg.VertexCompatAPIKey[targetIndex] = entry
@@ -1131,6 +1147,7 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 		Models         *[]config.CodexModel `json:"models"`
 		Headers        *map[string]string   `json:"headers"`
 		ExcludedModels *[]string            `json:"excluded-models"`
+		AllowedModels  *[]string            `json:"allowed-models"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1190,6 +1207,9 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	normalizeCodexKey(&entry)
 	h.cfg.CodexKey[targetIndex] = entry
@@ -1299,6 +1319,7 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 		Models         *[]config.XAIModel `json:"models"`
 		Headers        *map[string]string `json:"headers"`
 		ExcludedModels *[]string          `json:"excluded-models"`
+		AllowedModels  *[]string          `json:"allowed-models"`
 		DisableCooling *bool              `json:"disable-cooling"`
 	}
 	var body struct {
@@ -1365,6 +1386,9 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	}
 	if body.Value.ExcludedModels != nil {
 		entry.ExcludedModels = config.NormalizeExcludedModels(*body.Value.ExcludedModels)
+	}
+	if body.Value.AllowedModels != nil {
+		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
 	if body.Value.DisableCooling != nil {
 		entry.DisableCooling = *body.Value.DisableCooling
@@ -1439,6 +1463,8 @@ func normalizeOpenAICompatibilityEntry(entry *config.OpenAICompatibility) {
 	for i := range entry.APIKeyEntries {
 		trimmed := strings.TrimSpace(entry.APIKeyEntries[i].APIKey)
 		entry.APIKeyEntries[i].APIKey = trimmed
+		entry.APIKeyEntries[i].ProxyURL = strings.TrimSpace(entry.APIKeyEntries[i].ProxyURL)
+		entry.APIKeyEntries[i].AllowedModels = config.NormalizeAllowedModels(entry.APIKeyEntries[i].AllowedModels)
 		if trimmed != "" {
 			existing[trimmed] = struct{}{}
 		}
@@ -1470,6 +1496,7 @@ func normalizeClaudeKey(entry *config.ClaudeKey) {
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	entry.AllowedModels = config.NormalizeAllowedModels(entry.AllowedModels)
 	if len(entry.Models) == 0 {
 		return
 	}
@@ -1496,6 +1523,7 @@ func normalizeCodexKey(entry *config.CodexKey) {
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	entry.AllowedModels = config.NormalizeAllowedModels(entry.AllowedModels)
 	if len(entry.Models) == 0 {
 		return
 	}
@@ -1522,6 +1550,7 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 	entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 	entry.Headers = config.NormalizeHeaders(entry.Headers)
 	entry.ExcludedModels = config.NormalizeExcludedModels(entry.ExcludedModels)
+	entry.AllowedModels = config.NormalizeAllowedModels(entry.AllowedModels)
 	if len(entry.Models) == 0 {
 		return
 	}
