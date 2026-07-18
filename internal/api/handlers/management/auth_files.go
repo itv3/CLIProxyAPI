@@ -343,18 +343,25 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 
 // GetAuthFileModels returns the models supported by a specific auth file
 func (h *Handler) GetAuthFileModels(c *gin.Context) {
-	name := c.Query("name")
-	if name == "" {
-		c.JSON(400, gin.H{"error": "name is required"})
+	identifier := strings.TrimSpace(c.Query("auth_index"))
+	if identifier == "" {
+		identifier = strings.TrimSpace(c.Query("name"))
+	}
+	if identifier == "" {
+		c.JSON(400, gin.H{"error": "name or auth_index is required"})
 		return
 	}
 
-	// Try to find auth ID via authManager
+	// 将认证文件名或运行时索引解析为注册表中的认证 ID。
 	var authID string
 	if h.authManager != nil {
 		auths := h.authManager.List()
 		for _, auth := range auths {
-			if auth.FileName == name || auth.ID == name {
+			if auth == nil {
+				continue
+			}
+			index := strings.TrimSpace(auth.EnsureIndex())
+			if strings.TrimSpace(auth.FileName) == identifier || strings.TrimSpace(auth.ID) == identifier || index == identifier {
 				authID = auth.ID
 				break
 			}
@@ -362,7 +369,7 @@ func (h *Handler) GetAuthFileModels(c *gin.Context) {
 	}
 
 	if authID == "" {
-		authID = name // fallback to filename as ID
+		authID = identifier
 	}
 
 	// Get models from registry
@@ -491,6 +498,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
+	if accountID := authUpstreamAccountID(auth); accountID != "" {
+		entry["account_id"] = accountID
+	}
 	if projectID := authProjectID(auth); projectID != "" {
 		entry["project_id"] = projectID
 	}
@@ -593,6 +603,25 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	entry["model_rule_version"] = coreauth.AllowedModelRuleVersion(auth)
 	entry["credential_draft"] = coreauth.IsCredentialDraft(auth)
 	return entry
+}
+
+func authUpstreamAccountID(auth *coreauth.Auth) string {
+	if auth == nil || auth.Metadata == nil {
+		return ""
+	}
+	for _, key := range []string{"account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"} {
+		if value, ok := auth.Metadata[key].(string); ok {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+	}
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		if value, ok := claims["chatgpt_account_id"].(string); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {
@@ -860,19 +889,11 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 			if !strings.HasSuffix(strings.ToLower(name), ".json") {
 				continue
 			}
-			full := filepath.Join(h.cfg.AuthDir, name)
-			if !filepath.IsAbs(full) {
-				if abs, errAbs := filepath.Abs(full); errAbs == nil {
-					full = abs
-				}
-			}
-			if err = os.Remove(full); err == nil {
-				if errDel := h.deleteTokenRecord(ctx, full); errDel != nil {
-					c.JSON(500, gin.H{"error": errDel.Error()})
-					return
-				}
+			if _, status, errDelete := h.deleteAuthFileByName(ctx, name); errDelete == nil {
 				deleted++
-				h.removeAuth(ctx, full)
+			} else if status == http.StatusInternalServerError {
+				c.JSON(status, gin.H{"error": errDelete.Error()})
+				return
 			}
 		}
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
@@ -1071,16 +1092,31 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 			targetPath = abs
 		}
 	}
-	if errRemove := os.Remove(targetPath); errRemove != nil {
-		if os.IsNotExist(errRemove) {
+	deleteAuth := func() error {
+		if errRemove := os.Remove(targetPath); errRemove != nil {
+			if os.IsNotExist(errRemove) {
+				return errAuthFileNotFound
+			}
+			return fmt.Errorf("failed to remove file: %w", errRemove)
+		}
+		if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
+			return errDeleteRecord
+		}
+		h.removeAuthsForPath(ctx, targetPath, targetID)
+		return nil
+	}
+	var errDelete error
+	if targetID == "" {
+		errDelete = deleteAuth()
+	} else {
+		errDelete = h.authManager.WithCredentialMutation(targetID, deleteAuth)
+	}
+	if errDelete != nil {
+		if errors.Is(errDelete, errAuthFileNotFound) || os.IsNotExist(errDelete) {
 			return filepath.Base(name), http.StatusNotFound, errAuthFileNotFound
 		}
-		return filepath.Base(name), http.StatusInternalServerError, fmt.Errorf("failed to remove file: %w", errRemove)
+		return filepath.Base(name), http.StatusInternalServerError, errDelete
 	}
-	if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
-		return filepath.Base(name), http.StatusInternalServerError, errDeleteRecord
-	}
-	h.removeAuthsForPath(ctx, targetPath, targetID)
 	return filepath.Base(name), http.StatusOK, nil
 }
 
@@ -1267,8 +1303,9 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 
 	var req struct {
-		Name     string `json:"name"`
-		Disabled *bool  `json:"disabled"`
+		Name          string `json:"name"`
+		Disabled      *bool  `json:"disabled"`
+		FinalizeDraft bool   `json:"finalize_draft"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
@@ -1355,13 +1392,34 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 		return
 	}
 
-	applyAuthDisabledState(targetAuth, *req.Disabled)
-	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+	errMutation := h.authManager.WithCredentialMutation(targetAuth.ID, func() error {
+		latest, ok := h.authManager.GetByID(targetAuth.ID)
+		if !ok || latest == nil {
+			return errAuthFileNotFound
+		}
+		applyAuthDisabledState(latest, *req.Disabled)
+		if req.FinalizeDraft {
+			coreauth.ClearCredentialDraft(latest)
+		}
+		updated, errUpdate := h.authManager.Update(ctx, latest)
+		if errUpdate != nil {
+			return fmt.Errorf("failed to update auth: %w", errUpdate)
+		}
+		if updated == nil {
+			return errAuthFileNotFound
+		}
+		return nil
+	})
+	if errMutation != nil {
+		if errors.Is(errMutation, errAuthFileNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": errAuthFileNotFound.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": errMutation.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled})
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "disabled": *req.Disabled, "draft_finalized": req.FinalizeDraft})
 }
 
 // patchPluginVirtualSourceStatus toggles disabled on a plugin multi-auth source file and all

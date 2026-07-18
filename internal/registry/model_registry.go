@@ -140,6 +140,10 @@ type ModelRegistry struct {
 	clientModelInfos map[string]map[string]*ModelInfo
 	// clientProviders maps client ID to its provider identifier
 	clientProviders map[string]string
+	// clientProtocolGroups 记录客户端显式归属的模型列表协议组；空值表示对所有协议组可见。
+	clientProtocolGroups map[string]string
+	// clientUnscopedModels 记录客户端内覆盖默认协议组、对全部协议目录可见的模型。
+	clientUnscopedModels map[string]map[string]struct{}
 	// mutex ensures thread-safe access to the registry
 	mutex *sync.RWMutex
 	// availableModelsCache stores per-handler snapshots for GetAvailableModels.
@@ -160,6 +164,8 @@ func GetGlobalRegistry() *ModelRegistry {
 			clientModels:         make(map[string][]string),
 			clientModelInfos:     make(map[string]map[string]*ModelInfo),
 			clientProviders:      make(map[string]string),
+			clientProtocolGroups: make(map[string]string),
+			clientUnscopedModels: make(map[string]map[string]struct{}),
 			availableModelsCache: make(map[string]availableModelsCacheEntry),
 			mutex:                &sync.RWMutex{},
 		}
@@ -272,9 +278,19 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 //   - clientProvider: Provider name (e.g., "gemini", "claude", "openai")
 //   - models: List of models that this client can provide
 func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
+	r.registerClient(clientID, clientProvider, "", nil, models)
+}
+
+func (r *ModelRegistry) registerClient(clientID, clientProvider, protocolGroup string, unscopedModelIDs []string, models []*ModelInfo) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
+	if r.clientProtocolGroups == nil {
+		r.clientProtocolGroups = make(map[string]string)
+	}
+	if r.clientUnscopedModels == nil {
+		r.clientUnscopedModels = make(map[string]map[string]struct{})
+	}
 
 	provider := strings.ToLower(clientProvider)
 	uniqueModelIDs := make([]string, 0, len(models))
@@ -300,12 +316,21 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		delete(r.clientModels, clientID)
 		delete(r.clientModelInfos, clientID)
 		delete(r.clientProviders, clientID)
+		delete(r.clientProtocolGroups, clientID)
+		delete(r.clientUnscopedModels, clientID)
 		r.invalidateAvailableModelsCacheLocked()
 		misc.LogCredentialSeparator()
 		return
 	}
 
 	now := time.Now()
+	newUnscopedModels := make(map[string]struct{}, len(unscopedModelIDs))
+	for _, rawModelID := range unscopedModelIDs {
+		modelID := strings.TrimSpace(rawModelID)
+		if _, exists := newModels[modelID]; exists {
+			newUnscopedModels[modelID] = struct{}{}
+		}
+	}
 
 	oldModels, hadExisting := r.clientModels[clientID]
 	oldProvider := r.clientProviders[clientID]
@@ -327,6 +352,16 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 			r.clientProviders[clientID] = provider
 		} else {
 			delete(r.clientProviders, clientID)
+		}
+		if protocolGroup != "" {
+			r.clientProtocolGroups[clientID] = protocolGroup
+		} else {
+			delete(r.clientProtocolGroups, clientID)
+		}
+		if len(newUnscopedModels) > 0 {
+			r.clientUnscopedModels[clientID] = newUnscopedModels
+		} else {
+			delete(r.clientUnscopedModels, clientID)
 		}
 		r.invalidateAvailableModelsCacheLocked()
 		r.triggerModelsRegistered(provider, clientID, models)
@@ -473,6 +508,16 @@ func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models [
 		r.clientProviders[clientID] = provider
 	} else {
 		delete(r.clientProviders, clientID)
+	}
+	if protocolGroup != "" {
+		r.clientProtocolGroups[clientID] = protocolGroup
+	} else {
+		delete(r.clientProtocolGroups, clientID)
+	}
+	if len(newUnscopedModels) > 0 {
+		r.clientUnscopedModels[clientID] = newUnscopedModels
+	} else {
+		delete(r.clientUnscopedModels, clientID)
 	}
 
 	r.invalidateAvailableModelsCacheLocked()
@@ -636,6 +681,8 @@ func (r *ModelRegistry) unregisterClientInternal(clientID string) {
 		if hasProvider {
 			delete(r.clientProviders, clientID)
 		}
+		delete(r.clientProtocolGroups, clientID)
+		delete(r.clientUnscopedModels, clientID)
 		return
 	}
 
@@ -676,6 +723,8 @@ func (r *ModelRegistry) unregisterClientInternal(clientID string) {
 
 	delete(r.clientModels, clientID)
 	delete(r.clientModelInfos, clientID)
+	delete(r.clientProtocolGroups, clientID)
+	delete(r.clientUnscopedModels, clientID)
 	if hasProvider {
 		delete(r.clientProviders, clientID)
 	}

@@ -1040,12 +1040,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewCodexAutoExecutor(s.cfg))
 		return
 	}
-	// Skip disabled auth entries when (re)binding executors.
-	// Disabled auths can linger during config reloads (e.g., removed OpenAI-compat entries)
-	// and must not override active provider executors.
-	if a.Disabled {
-		return
-	}
 	if compatProviderKey, _, isCompat := openAICompatInfoFromAuth(a); isCompat {
 		if compatProviderKey == "" {
 			compatProviderKey = strings.ToLower(strings.TrimSpace(a.Provider))
@@ -1053,14 +1047,22 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		if compatProviderKey == "" {
 			compatProviderKey = "openai-compatibility"
 		}
-		if !forceReplace {
-			if existingExecutor, hasExecutor := s.coreManager.Executor(compatProviderKey); hasExecutor {
-				if _, isOpenAICompatExecutor := existingExecutor.(*executor.OpenAICompatExecutor); isOpenAICompatExecutor {
+		if existingExecutor, hasExecutor := s.coreManager.Executor(compatProviderKey); hasExecutor {
+			if _, isOpenAICompatExecutor := existingExecutor.(*executor.OpenAICompatExecutor); isOpenAICompatExecutor {
+				if a.Disabled || !forceReplace {
 					return
 				}
+			} else if a.Disabled {
+				// 停用草稿不得覆盖同名的活动插件执行器。
+				return
 			}
 		}
+		// OpenAI Compatibility 执行器不持有凭证状态，停用草稿也需要它完成固定账号测试。
 		s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor(compatProviderKey, s.cfg))
+		return
+	}
+	// 其他停用认证沿用原有行为，避免重载残留覆盖活动执行器。
+	if a.Disabled {
 		return
 	}
 	switch strings.ToLower(a.Provider) {
@@ -1106,6 +1108,14 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 }
 
 func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey string, models []*ModelInfo) {
+	s.registerResolvedModelsForAuthWithProtocolGroup(a, providerKey, protocolGroupForAuth(a), models)
+}
+
+func (s *Service) registerResolvedModelsForAuthWithProtocolGroup(a *coreauth.Auth, providerKey, protocolGroup string, models []*ModelInfo) {
+	s.registerResolvedModelsForAuthWithProtocolVisibility(a, providerKey, protocolGroup, nil, models)
+}
+
+func (s *Service) registerResolvedModelsForAuthWithProtocolVisibility(a *coreauth.Auth, providerKey, protocolGroup string, unscopedModelIDs map[string]struct{}, models []*ModelInfo) {
 	if a == nil || a.ID == "" {
 		return
 	}
@@ -1132,7 +1142,39 @@ func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey st
 		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	}
-	GlobalModelRegistry().RegisterClient(a.ID, providerKey, normalizedModels)
+	registeredUnscopedModelIDs := make([]string, 0, len(unscopedModelIDs))
+	for _, model := range normalizedModels {
+		if _, unscoped := unscopedModelIDs[model.ID]; unscoped {
+			registeredUnscopedModelIDs = append(registeredUnscopedModelIDs, model.ID)
+		}
+	}
+	registry.GetGlobalRegistry().RegisterClientWithProtocolGroupAndUnscopedModels(
+		a.ID,
+		providerKey,
+		protocolGroup,
+		registeredUnscopedModelIDs,
+		normalizedModels,
+	)
+}
+
+func protocolGroupForAuth(a *coreauth.Auth) string {
+	if a == nil || coreauth.IsPluginVirtualAuth(a) {
+		return ""
+	}
+	if _, _, isCompat := openAICompatInfoFromAuth(a); isCompat {
+		return registry.ProtocolGroupOpenAI
+	}
+
+	switch strings.ToLower(strings.TrimSpace(a.Provider)) {
+	case "claude":
+		return registry.ProtocolGroupClaude
+	case "openai", "codex", "kimi", "xai":
+		return registry.ProtocolGroupOpenAI
+	case constant.Gemini, constant.GeminiInteractions, "vertex", "aistudio", "antigravity":
+		return registry.ProtocolGroupGemini
+	default:
+		return ""
+	}
 }
 
 func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
@@ -1142,13 +1184,17 @@ func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
 	return s.pluginHost.ModelsForProvider(providerKey)
 }
 
-func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo) []*ModelInfo {
-	pluginModels := s.pluginModelsForProvider(providerKey)
+func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo) ([]*ModelInfo, map[string]struct{}) {
+	return mergePluginModels(models, s.pluginModelsForProvider(providerKey))
+}
+
+func mergePluginModels(models, pluginModels []*ModelInfo) ([]*ModelInfo, map[string]struct{}) {
 	if len(pluginModels) == 0 {
-		return models
+		return models, nil
 	}
 	out := make([]*ModelInfo, 0, len(models)+len(pluginModels))
 	seen := make(map[string]struct{}, len(models)+len(pluginModels))
+	unscopedModelIDs := make(map[string]struct{}, len(pluginModels))
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -1172,8 +1218,23 @@ func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo) []
 		}
 		seen[modelID] = struct{}{}
 		out = append(out, model)
+		unscopedModelIDs[modelID] = struct{}{}
 	}
-	return out
+	if len(unscopedModelIDs) == 0 {
+		return out, nil
+	}
+	return out, unscopedModelIDs
+}
+
+func (s *Service) registerResolvedModelsWithAppendedPluginModels(a *coreauth.Auth, providerKey string, models []*ModelInfo) {
+	models, unscopedModelIDs := s.appendPluginModels(providerKey, models)
+	forceModelPrefix := s.cfg != nil && s.cfg.ForceModelPrefix
+	prefix := ""
+	if a != nil {
+		prefix = a.Prefix
+	}
+	models, unscopedModelIDs = applyModelPrefixesWithUnscopedModels(models, unscopedModelIDs, prefix, forceModelPrefix)
+	s.registerResolvedModelsForAuthWithProtocolVisibility(a, providerKey, protocolGroupForAuth(a), unscopedModelIDs, models)
 }
 
 func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) bool {
@@ -1234,7 +1295,8 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	models := applyExcludedModels(result.Models, activeExcluded)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
-		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+		// 插件接管的账号不声明协议组，确保其模型在三个协议目录中都可见。
+		s.registerResolvedModelsForAuthWithProtocolGroup(activeAuth, providerKey, "", applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return true
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
@@ -2084,18 +2146,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				if providerKey == "" {
 					providerKey = "openai-compatibility"
 				}
-				ms := cached.models
-				if len(ms) > 0 {
-					ms = s.appendPluginModels(providerKey, ms)
-					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-				} else {
-					ms = s.appendPluginModels(providerKey, nil)
-					if len(ms) > 0 {
-						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-					} else {
-						GlobalModelRegistry().UnregisterClient(a.ID)
-					}
-				}
+				s.registerResolvedModelsWithAppendedPluginModels(a, providerKey, cached.models)
 				return
 			}
 			for i := range s.cfg.OpenAICompatibility {
@@ -2105,34 +2156,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				}
 				if strings.EqualFold(compat.Name, compatName) {
 					isCompatAuth = true
-					ms := buildOpenAICompatibilityConfigModels(compat)
-					// Register and return
-					if len(ms) > 0 {
-						if providerKey == "" {
-							providerKey = "openai-compatibility"
-						}
-						ms = s.appendPluginModels(providerKey, ms)
-						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-					} else {
-						// Ensure stale registrations are cleared when model list becomes empty.
-						ms = s.appendPluginModels(providerKey, nil)
-						if len(ms) > 0 {
-							s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-						} else {
-							GlobalModelRegistry().UnregisterClient(a.ID)
-						}
+					modelsForCompatibility := buildOpenAICompatibilityConfigModels(compat)
+					if len(modelsForCompatibility) > 0 && providerKey == "" {
+						providerKey = "openai-compatibility"
 					}
+					s.registerResolvedModelsWithAppendedPluginModels(a, providerKey, modelsForCompatibility)
 					return
 				}
 			}
 			if isCompatAuth {
-				models = s.appendPluginModels(providerKey, nil)
-				if len(models) > 0 {
-					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-				} else {
-					// No matching provider found or models removed entirely; drop any prior registration.
-					GlobalModelRegistry().UnregisterClient(a.ID)
-				}
+				s.registerResolvedModelsWithAppendedPluginModels(a, providerKey, nil)
 				return
 			}
 		}
@@ -2142,13 +2175,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	if key == "" {
 		key = strings.ToLower(strings.TrimSpace(a.Provider))
 	}
-	models = s.appendPluginModels(key, models)
-	if len(models) > 0 {
-		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		return
-	}
-
-	GlobalModelRegistry().UnregisterClient(a.ID)
+	s.registerResolvedModelsWithAppendedPluginModels(a, key, models)
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for
@@ -2407,15 +2434,28 @@ func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
 }
 
 func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix bool) []*ModelInfo {
+	prefixedModels, _ := applyModelPrefixesWithUnscopedModels(models, nil, prefix, forceModelPrefix)
+	return prefixedModels
+}
+
+func applyModelPrefixesWithUnscopedModels(models []*ModelInfo, unscopedModelIDs map[string]struct{}, prefix string, forceModelPrefix bool) ([]*ModelInfo, map[string]struct{}) {
 	trimmedPrefix := strings.TrimSpace(prefix)
 	if trimmedPrefix == "" || len(models) == 0 {
-		return models
+		if len(unscopedModelIDs) == 0 {
+			return models, nil
+		}
+		unscopedCopy := make(map[string]struct{}, len(unscopedModelIDs))
+		for modelID := range unscopedModelIDs {
+			unscopedCopy[modelID] = struct{}{}
+		}
+		return models, unscopedCopy
 	}
 
 	out := make([]*ModelInfo, 0, len(models)*2)
 	seen := make(map[string]struct{}, len(models)*2)
+	prefixedUnscopedModelIDs := make(map[string]struct{}, len(unscopedModelIDs)*2)
 
-	addModel := func(model *ModelInfo) {
+	addModel := func(model *ModelInfo, unscoped bool) {
 		if model == nil {
 			return
 		}
@@ -2428,6 +2468,9 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		}
 		seen[id] = struct{}{}
 		out = append(out, model)
+		if unscoped {
+			prefixedUnscopedModelIDs[id] = struct{}{}
+		}
 	}
 
 	for _, model := range models {
@@ -2438,14 +2481,18 @@ func applyModelPrefixes(models []*ModelInfo, prefix string, forceModelPrefix boo
 		if baseID == "" {
 			continue
 		}
+		_, unscoped := unscopedModelIDs[baseID]
 		if !forceModelPrefix || trimmedPrefix == baseID {
-			addModel(model)
+			addModel(model, unscoped)
 		}
 		clone := *model
 		clone.ID = trimmedPrefix + "/" + baseID
-		addModel(&clone)
+		addModel(&clone, unscoped)
 	}
-	return out
+	if len(prefixedUnscopedModelIDs) == 0 {
+		return out, nil
+	}
+	return out, prefixedUnscopedModelIDs
 }
 
 // matchWildcard performs case-insensitive wildcard matching where '*' matches any substring.

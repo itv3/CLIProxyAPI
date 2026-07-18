@@ -52,6 +52,9 @@ func (h *OpenAIAPIHandler) HandlerType() string {
 func (h *OpenAIAPIHandler) Models() []map[string]any {
 	// Get dynamic models from the global registry
 	modelRegistry := registry.GetGlobalRegistry()
+	if h.ProtocolModelListEnabled() {
+		return modelRegistry.GetAvailableModelsForProtocol("openai", registry.ProtocolGroupOpenAI)
+	}
 	return modelRegistry.GetAvailableModels("openai")
 }
 

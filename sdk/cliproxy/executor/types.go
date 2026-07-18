@@ -34,6 +34,10 @@ const GenerateMetadataKey = "generate"
 const (
 	// PinnedAuthMetadataKey locks execution to a specific auth ID.
 	PinnedAuthMetadataKey = "pinned_auth_id"
+	// ConnectivityTestMetadataKey 标记管理员主动发起的账号连通性测试。
+	ConnectivityTestMetadataKey = "account_connectivity_test"
+	// ExecutionSourceMetadataKey 标识一次执行的内部来源。
+	ExecutionSourceMetadataKey = "execution_source"
 	// SelectedAuthMetadataKey stores the auth ID selected by the scheduler.
 	SelectedAuthMetadataKey = "selected_auth_id"
 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.

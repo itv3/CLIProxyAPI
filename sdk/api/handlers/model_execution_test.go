@@ -253,6 +253,37 @@ func TestExecuteModelCarriesEntryAndExitProtocols(t *testing.T) {
 	}
 }
 
+func TestProtocolModelListDoesNotRestrictCrossProtocolExecution(t *testing.T) {
+	model := "protocol-list-cross-group-call-model"
+	executor := &modelExecutionCaptureExecutor{provider: "codex"}
+	handler := newModelExecutionHandler(t, model, executor, &sdkconfig.SDKConfig{ProtocolModelListEnabled: true})
+
+	clientID := "model-execution-" + model
+	modelRegistry := registry.GetGlobalRegistry()
+	modelRegistry.RegisterClientWithProtocolGroup(clientID, "codex", registry.ProtocolGroupOpenAI, []*registry.ModelInfo{{ID: model}})
+	for _, entry := range modelRegistry.GetAvailableModelsForProtocol("claude", registry.ProtocolGroupClaude) {
+		if entry["id"] == model {
+			t.Fatalf("Claude 模型列表不应显示 OpenAI 协议组模型 %q", model)
+		}
+	}
+
+	resp, errMsg := handler.ExecuteModel(context.Background(), ModelExecutionRequest{
+		EntryProtocol: "claude",
+		ExitProtocol:  "openai",
+		Model:         model,
+		Body:          []byte(fmt.Sprintf(`{"model":%q,"messages":[]}`, model)),
+	})
+	if errMsg != nil {
+		t.Fatalf("跨协议手工调用被模型列表开关拒绝：%+v", errMsg)
+	}
+	if resp.StatusCode != http.StatusOK || string(resp.Body) != "model-execution-ok" {
+		t.Fatalf("跨协议手工调用响应 = status %d, body %q", resp.StatusCode, resp.Body)
+	}
+	if gotRequest, _ := executor.captured(); gotRequest.Model != model {
+		t.Fatalf("执行器收到模型 = %q，期望 %q", gotRequest.Model, model)
+	}
+}
+
 func TestExecuteModelSkipsOriginatingPluginInterceptors(t *testing.T) {
 	model := "model-execution-skip-origin-model"
 	requestBody := []byte(fmt.Sprintf(`{"model":%q}`, model))

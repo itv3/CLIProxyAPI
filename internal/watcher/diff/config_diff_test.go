@@ -263,6 +263,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			ProxyURL:                   "http://old-proxy",
 			APIKeys:                    []string{"key-1"},
 			ForceModelPrefix:           false,
+			ProtocolModelListEnabled:   false,
 			NonStreamKeepAliveInterval: 0,
 		},
 	}
@@ -299,6 +300,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			ProxyURL:                   "http://new-proxy",
 			APIKeys:                    []string{" key-1 ", "key-2"},
 			ForceModelPrefix:           true,
+			ProtocolModelListEnabled:   true,
 			NonStreamKeepAliveInterval: 5,
 			DisableImageGeneration:     config.DisableImageGenerationAll,
 		},
@@ -318,6 +320,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "max-retry-interval: 1 -> 3")
 	expectContains(t, details, "proxy-url: http://old-proxy -> http://new-proxy")
 	expectContains(t, details, "ws-auth: false -> true")
+	expectContains(t, details, "protocol-model-list-enabled: false -> true")
 	expectContains(t, details, "force-model-prefix: false -> true")
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")

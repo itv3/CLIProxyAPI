@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -62,6 +63,7 @@ const (
 )
 
 type pinnedAuthContextKey struct{}
+type connectivityTestContextKey struct{}
 type selectedAuthCallbackContextKey struct{}
 type executionSessionContextKey struct{}
 type disallowFreeAuthContextKey struct{}
@@ -128,6 +130,15 @@ func WithPinnedAuthID(ctx context.Context, authID string) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, pinnedAuthContextKey{}, authID)
+}
+
+// WithAccountConnectivityTest 将执行标记为管理员主动发起的账号测试。
+// 该执行还必须固定到一个明确的认证 ID。
+func WithAccountConnectivityTest(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, connectivityTestContextKey{}, true)
 }
 
 // WithSelectedAuthIDCallback returns a child context that receives the selected auth ID.
@@ -280,6 +291,10 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	if pinnedAuthID := pinnedAuthIDFromContext(ctx); pinnedAuthID != "" {
 		meta[coreexecutor.PinnedAuthMetadataKey] = pinnedAuthID
 	}
+	if accountConnectivityTestFromContext(ctx) {
+		meta[coreexecutor.ConnectivityTestMetadataKey] = true
+		meta[coreexecutor.ExecutionSourceMetadataKey] = "account_connectivity_test"
+	}
 	if selectedCallback := selectedAuthIDCallbackFromContext(ctx); selectedCallback != nil {
 		meta[coreexecutor.SelectedAuthCallbackMetadataKey] = selectedCallback
 	}
@@ -384,6 +399,14 @@ func pinnedAuthIDFromContext(ctx context.Context) string {
 	}
 }
 
+func accountConnectivityTestFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(connectivityTestContextKey{}).(bool)
+	return value
+}
+
 func selectedAuthIDCallbackFromContext(ctx context.Context) func(string) {
 	if ctx == nil {
 		return nil
@@ -426,7 +449,8 @@ type BaseAPIHandler struct {
 	AuthManager *coreauth.Manager
 
 	// Cfg holds the current application configuration.
-	Cfg *config.SDKConfig
+	Cfg                      *config.SDKConfig
+	protocolModelListEnabled atomic.Bool
 
 	// PluginHost optionally applies plugin interceptors around upstream execution.
 	PluginHost PluginInterceptorHost
@@ -446,10 +470,12 @@ type BaseAPIHandler struct {
 // Returns:
 //   - *BaseAPIHandler: A new API handlers instance
 func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *BaseAPIHandler {
-	return &BaseAPIHandler{
+	handler := &BaseAPIHandler{
 		Cfg:         cfg,
 		AuthManager: authManager,
 	}
+	handler.protocolModelListEnabled.Store(cfg != nil && cfg.ProtocolModelListEnabled)
+	return handler
 }
 
 // UpdateClients updates the handlers' client list and configuration.
@@ -458,7 +484,15 @@ func NewBaseAPIHandlers(cfg *config.SDKConfig, authManager *coreauth.Manager) *B
 // Parameters:
 //   - clients: The new slice of AI service clients
 //   - cfg: The new application configuration
-func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) { h.Cfg = cfg }
+func (h *BaseAPIHandler) UpdateClients(cfg *config.SDKConfig) {
+	h.Cfg = cfg
+	h.protocolModelListEnabled.Store(cfg != nil && cfg.ProtocolModelListEnabled)
+}
+
+// ProtocolModelListEnabled 返回模型列表协议分组开关的热更新快照。
+func (h *BaseAPIHandler) ProtocolModelListEnabled() bool {
+	return h != nil && h.protocolModelListEnabled.Load()
+}
 
 // SetPluginHost configures the optional plugin interceptor host.
 func (h *BaseAPIHandler) SetPluginHost(host PluginInterceptorHost) {

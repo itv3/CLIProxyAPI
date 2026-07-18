@@ -150,6 +150,26 @@ func TestRegisterExecutorForAuth_OpenAICompatUsesNamespacedProviderKey(t *testin
 	}
 }
 
+func TestRegisterExecutorForAuth_DisabledOpenAICompatRegistersTestExecutor(t *testing.T) {
+	service := &Service{
+		cfg:         &config.Config{},
+		coreManager: coreauth.NewManager(nil, nil, nil),
+	}
+	auth := openAICompatKimiAuth()
+	auth.Disabled = true
+	auth.Status = coreauth.StatusDisabled
+
+	service.registerExecutorForAuth(auth, true)
+
+	resolved, ok := service.coreManager.Executor("openai-compatible-kimi")
+	if !ok {
+		t.Fatal("停用 OpenAI Compatibility 认证缺少测试执行器")
+	}
+	if _, isOpenAICompat := resolved.(*runtimeexecutor.OpenAICompatExecutor); !isOpenAICompat {
+		t.Fatalf("测试执行器类型 = %T", resolved)
+	}
+}
+
 func openAICompatKimiAuth() *coreauth.Auth {
 	return &coreauth.Auth{
 		ID:       "compat-kimi",

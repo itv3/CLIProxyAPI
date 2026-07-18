@@ -109,6 +109,10 @@ proxy-url: ""
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 
+# 开启后，模型列表接口仅显示由对应上游账号协议组提供的模型；不限制实际调用。
+# 未知来源、插件模型及 Home 模式保持全量显示。
+protocol-model-list-enabled: false
+
 # When true, forward filtered upstream response headers to downstream clients.
 # Default is false (disabled).
 passthrough-headers: false

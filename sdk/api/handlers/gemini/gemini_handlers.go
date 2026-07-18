@@ -41,14 +41,16 @@ func (h *GeminiAPIHandler) HandlerType() string {
 // Models returns the Gemini-compatible model metadata supported by this handler.
 func (h *GeminiAPIHandler) Models() []map[string]any {
 	// Get dynamic models from the global registry
-	modelRegistry := registry.GetGlobalRegistry()
-	return modelRegistry.GetAvailableModels("gemini")
+	return registry.GetGlobalRegistry().GetAvailableModels("gemini")
 }
 
 // GeminiModels handles the Gemini models listing endpoint.
 // It returns a JSON response containing available Gemini models and their specifications.
 func (h *GeminiAPIHandler) GeminiModels(c *gin.Context) {
 	rawModels := h.Models()
+	if h.ProtocolModelListEnabled() {
+		rawModels = registry.GetGlobalRegistry().GetAvailableModelsForProtocol("gemini", registry.ProtocolGroupGemini)
+	}
 	normalizedModels := make([]map[string]any, 0, len(rawModels))
 	defaultMethods := []string{"generateContent"}
 	for _, model := range rawModels {

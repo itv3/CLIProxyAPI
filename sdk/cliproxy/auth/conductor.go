@@ -2538,6 +2538,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	routeModel := authSelectionModelFromOptions(opts, req.Model)
 	executionModel, restoreExecutionModel := executionModelForAuthSelection(opts, req.Model)
 	opts = ensureRequestedModelMetadata(opts, routeModel)
+	connectivityTest := connectivityTestFromMetadata(opts.Metadata)
 	homeMode := m.HomeEnabled()
 	homeAuthCount := 1
 	tried := make(map[string]struct{})
@@ -2583,7 +2584,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
 		if errPrepare != nil {
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
-			m.MarkResult(execCtx, result)
+			if !connectivityTest {
+				m.MarkResult(execCtx, result)
+			}
 			lastErr = errPrepare
 			continue
 		}
@@ -2620,14 +2623,18 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
 				}
-				m.MarkResult(execCtx, result)
+				if !connectivityTest {
+					m.MarkResult(execCtx, result)
+				}
 				if isRequestInvalidError(errExec) {
 					return cliproxyexecutor.Response{}, errExec
 				}
 				authErr = errExec
 				continue
 			}
-			m.MarkResult(execCtx, result)
+			if !connectivityTest {
+				m.MarkResult(execCtx, result)
+			}
 			rewriteForceMappedResponse(&resp, aliasResult)
 			return resp, nil
 		}
@@ -3122,6 +3129,28 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
 		return strings.TrimSpace(string(val))
 	default:
 		return ""
+	}
+}
+
+func connectivityTestFromMetadata(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	raw, ok := meta[cliproxyexecutor.ConnectivityTestMetadataKey]
+	if !ok || raw == nil {
+		return false
+	}
+	switch value := raw.(type) {
+	case bool:
+		return value
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		return err == nil && parsed
+	case []byte:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(string(value)))
+		return err == nil && parsed
+	default:
+		return false
 	}
 }
 
@@ -4880,6 +4909,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 }
 
 func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	if connectivityTestFromMetadata(opts.Metadata) {
+		return m.pickPinnedConnectivityTestAuth(providers, opts, tried)
+	}
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}
@@ -4966,6 +4998,41 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 		}
 		return authCopy, executor, providerKey, nil
 	}
+}
+
+func (m *Manager) pickPinnedConnectivityTestAuth(providers []string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	authID := pinnedAuthIDFromMetadata(opts.Metadata)
+	if authID == "" {
+		return nil, nil, "", &Error{Code: "auth_not_found", Message: "connectivity test requires a pinned auth ID"}
+	}
+	if _, alreadyTried := tried[authID]; alreadyTried {
+		return nil, nil, "", &Error{Code: "auth_not_found", Message: "pinned auth already attempted"}
+	}
+
+	m.mu.RLock()
+	auth := m.auths[authID]
+	if auth == nil {
+		m.mu.RUnlock()
+		return nil, nil, "", &Error{Code: "auth_not_found", Message: "pinned auth is unavailable"}
+	}
+	providerKey := executorKeyFromAuth(auth)
+	executor := m.executors[providerKey]
+	authCopy := auth.Clone()
+	m.mu.RUnlock()
+
+	if providerKey == "" || executor == nil || !containsProvider(normalizeProviderKeys(providers), providerKey) {
+		return nil, nil, "", &Error{Code: "executor_not_found", Message: "pinned auth executor is unavailable"}
+	}
+	authCopy.EnsureIndex()
+	authCopy.Disabled = false
+	authCopy.Unavailable = false
+	authCopy.Status = StatusActive
+	authCopy.StatusMessage = ""
+	authCopy.LastError = nil
+	authCopy.Quota = QuotaState{}
+	authCopy.NextRetryAfter = time.Time{}
+	authCopy.ModelStates = nil
+	return authCopy, executor, providerKey, nil
 }
 
 type homeErrorEnvelope struct {

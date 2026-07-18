@@ -58,6 +58,9 @@ func (h *ClaudeCodeAPIHandler) HandlerType() string {
 func (h *ClaudeCodeAPIHandler) Models() []map[string]any {
 	// Get dynamic models from the global registry
 	modelRegistry := registry.GetGlobalRegistry()
+	if h.ProtocolModelListEnabled() {
+		return modelRegistry.GetAvailableModelsForProtocol("claude", registry.ProtocolGroupClaude)
+	}
 	return modelRegistry.GetAvailableModels("claude")
 }
 

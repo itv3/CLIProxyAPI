@@ -1,6 +1,7 @@
 package synthesizer
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -538,6 +539,42 @@ func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) 
 	}
 	if auth.Attributes["compat_name"] != "kimi" {
 		t.Fatalf("compat_name = %q, want kimi", auth.Attributes["compat_name"])
+	}
+}
+
+func TestConfigSynthesizer_OpenAICompat_DisabledProviderRemainsRuntimeVisible(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:     "draft-provider",
+					BaseURL:  "https://draft.example.com/v1",
+					Disabled: true,
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "test-key", AllowedModels: []string{"test-model"}},
+					},
+				},
+			},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("合成停用 OpenAI Compatibility 认证：%v", err)
+	}
+	if len(auths) != 1 {
+		t.Fatalf("停用认证数量 = %d，期望 1", len(auths))
+	}
+	auth := auths[0]
+	if !auth.Disabled || auth.Status != coreauth.StatusDisabled {
+		t.Fatalf("停用认证状态 = disabled:%t status:%q", auth.Disabled, auth.Status)
+	}
+	policy := coreauth.AllowedModelPolicyForAuth(auth)
+	if !reflect.DeepEqual(policy.Patterns, []string{"test-model"}) {
+		t.Fatalf("停用认证白名单 = %#v", policy.Patterns)
 	}
 }
 

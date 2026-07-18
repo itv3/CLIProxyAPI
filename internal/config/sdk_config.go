@@ -39,6 +39,9 @@ type SDKConfig struct {
 	// credentials as well.
 	ForceModelPrefix bool `yaml:"force-model-prefix" json:"force-model-prefix"`
 
+	// ProtocolModelListEnabled 控制模型列表是否按上游账号协议组过滤，不参与实际请求校验与调度。
+	ProtocolModelListEnabled bool `yaml:"protocol-model-list-enabled" json:"protocol-model-list-enabled"`
+
 	// RequestLog enables or disables detailed request logging functionality.
 	RequestLog bool `yaml:"request-log" json:"request-log"`
 

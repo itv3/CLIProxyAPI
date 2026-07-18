@@ -47,6 +47,7 @@ type Handler struct {
 	attemptsMu              sync.Mutex
 	failedAttempts          map[string]*attemptInfo // keyed by client IP
 	authManager             *coreauth.Manager
+	modelExecutor           accountTestModelExecutor
 	tokenStore              coreauth.Store
 	localPassword           string
 	allowRemoteOverride     bool
@@ -269,6 +270,8 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
 		c.Header("X-CPA-SUPPORT-PLUGIN", pluginhost.SupportPluginHeaderValue())
 		c.Header("X-CPA-SUPPORT-CREDENTIAL-DRAFT", "true")
+		c.Header("X-CPA-SUPPORT-CREDENTIAL-REFRESH", "true")
+		c.Header("X-CPA-SUPPORT-TARGETED-REAUTH", "true")
 		c.Header("X-CPA-SUPPORT-ALLOWED-MODELS", "true")
 
 		clientIP := c.ClientIP()

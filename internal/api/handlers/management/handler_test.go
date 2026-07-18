@@ -67,6 +67,12 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 		if got := rec.Header().Get("X-CPA-SUPPORT-CREDENTIAL-DRAFT"); got != "true" {
 			t.Fatalf("X-CPA-SUPPORT-CREDENTIAL-DRAFT = %q, want true", got)
 		}
+		if got := rec.Header().Get("X-CPA-SUPPORT-CREDENTIAL-REFRESH"); got != "true" {
+			t.Fatalf("X-CPA-SUPPORT-CREDENTIAL-REFRESH = %q, want true", got)
+		}
+		if got := rec.Header().Get("X-CPA-SUPPORT-TARGETED-REAUTH"); got != "true" {
+			t.Fatalf("X-CPA-SUPPORT-TARGETED-REAUTH = %q, want true", got)
+		}
 		if got := rec.Header().Get("X-CPA-SUPPORT-ALLOWED-MODELS"); got != "true" {
 			t.Fatalf("X-CPA-SUPPORT-ALLOWED-MODELS = %q, want true", got)
 		}

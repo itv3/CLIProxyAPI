@@ -59,6 +59,8 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-BUILD-DATE",
 	"X-CPA-SUPPORT-PLUGIN",
 	"X-CPA-SUPPORT-CREDENTIAL-DRAFT",
+	"X-CPA-SUPPORT-CREDENTIAL-REFRESH",
+	"X-CPA-SUPPORT-TARGETED-REAUTH",
 	"X-CPA-SUPPORT-ALLOWED-MODELS",
 	"X-CPA-HOME-VERSION",
 	"X-CPA-HOME-BUILD-DATE",
@@ -359,6 +361,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	applySignatureCacheConfig(nil, cfg)
 	// Initialize management handler
 	s.mgmt = managementHandlers.NewHandler(cfg, configFilePath, authManager)
+	s.mgmt.SetModelExecutor(s.handlers)
 	s.mgmt.SetPluginHost(optionState.pluginHost)
 	s.mgmt.SetConfigReloadHook(optionState.configReloadHook)
 	if optionState.localPassword != "" {
@@ -851,6 +854,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/proxy-url", s.mgmt.DeleteProxyURL)
 
 		mgmt.POST("/api-call", s.mgmt.APICall)
+		mgmt.POST("/account-test", s.mgmt.AccountTest)
 
 		mgmt.GET("/quota-exceeded/switch-project", s.mgmt.GetSwitchProject)
 		mgmt.PUT("/quota-exceeded/switch-project", s.mgmt.PutSwitchProject)
@@ -948,6 +952,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
+		mgmt.POST("/auth-files/refresh", s.mgmt.RefreshAuthFileCredential)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)
