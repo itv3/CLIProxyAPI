@@ -413,13 +413,12 @@ func mappedModelAliases[T mappedModel](models []T) []string {
 	}
 	aliases := make([]string, 0, len(models))
 	for i := range models {
+		name := strings.TrimSpace(models[i].GetName())
 		alias := strings.TrimSpace(models[i].GetAlias())
-		if alias == "" {
-			alias = strings.TrimSpace(models[i].GetName())
+		if alias == "" || strings.EqualFold(alias, name) {
+			continue
 		}
-		if alias != "" {
-			aliases = append(aliases, alias)
-		}
+		aliases = append(aliases, alias)
 	}
 	return aliases
 }

@@ -38,6 +38,9 @@ func TestRegisterResolvedModelsForAuthFiltersClientVisibleModels(t *testing.T) {
 	if got["blocked"] {
 		t.Fatalf("blocked model remained registered: %#v", got)
 	}
+	if registry.ClientSupportsModel(auth.ID, "blocked") {
+		t.Fatal("blocked model remained eligible for scheduling")
+	}
 }
 
 func TestRegisterResolvedModelsForAuthEmptyAllowlistKeepsLegacyBehavior(t *testing.T) {

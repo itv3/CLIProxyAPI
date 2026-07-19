@@ -19,6 +19,9 @@ func TestConfigSynthesizerKeepsOpenAICompatibilityAllowlistPerKey(t *testing.T) 
 			BaseURL: "https://example.com/v1",
 			Models: []config.OpenAICompatibilityModel{
 				{Name: "upstream-a", Alias: "alias-a"},
+				{Name: "identity-a", Alias: "identity-a"},
+				{Name: "identity-b"},
+				{Name: "Identity-C", Alias: "identity-c"},
 			},
 			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
 				{APIKey: "key-a", AllowedModels: []string{"model-a"}},
@@ -47,6 +50,20 @@ func TestConfigSynthesizerKeepsOpenAICompatibilityAllowlistPerKey(t *testing.T) 
 	}
 	if !reflect.DeepEqual(first.Aliases, []string{"alias-a"}) || !reflect.DeepEqual(second.Aliases, []string{"alias-a"}) {
 		t.Fatalf("mapping aliases first/second = %#v/%#v", first.Aliases, second.Aliases)
+	}
+}
+
+func TestMappedModelAliasesKeepsOnlyNonIdentityAliases(t *testing.T) {
+	models := []config.OpenAICompatibilityModel{
+		{Name: "upstream-a", Alias: "client-a"},
+		{Name: "identity-a", Alias: "identity-a"},
+		{Name: "identity-b"},
+		{Name: "Identity-C", Alias: "identity-c"},
+		{Name: "", Alias: "client-without-name"},
+	}
+
+	if got := mappedModelAliases(models); !reflect.DeepEqual(got, []string{"client-a", "client-without-name"}) {
+		t.Fatalf("mapped aliases = %#v", got)
 	}
 }
 
