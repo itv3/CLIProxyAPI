@@ -468,6 +468,12 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 	for i := range arr {
 		normalizeClaudeKey(&arr[i])
 	}
+	candidate := &config.Config{ClaudeKey: arr}
+	if err = candidate.NormalizeOfficialClientCompatibility(true); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	arr = candidate.ClaudeKey
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.ClaudeKey = arr
@@ -476,15 +482,16 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
-		APIKey                  *string               `json:"api-key"`
-		Prefix                  *string               `json:"prefix"`
-		BaseURL                 *string               `json:"base-url"`
-		ProxyURL                *string               `json:"proxy-url"`
-		Models                  *[]config.ClaudeModel `json:"models"`
-		Headers                 *map[string]string    `json:"headers"`
-		ExcludedModels          *[]string             `json:"excluded-models"`
-		AllowedModels           *[]string             `json:"allowed-models"`
-		RebuildMidSystemMessage *bool                 `json:"rebuild-mid-system-message"`
+		APIKey                      *string               `json:"api-key"`
+		Prefix                      *string               `json:"prefix"`
+		BaseURL                     *string               `json:"base-url"`
+		ProxyURL                    *string               `json:"proxy-url"`
+		Models                      *[]config.ClaudeModel `json:"models"`
+		Headers                     *map[string]string    `json:"headers"`
+		ExcludedModels              *[]string             `json:"excluded-models"`
+		AllowedModels               *[]string             `json:"allowed-models"`
+		RebuildMidSystemMessage     *bool                 `json:"rebuild-mid-system-message"`
+		OfficialClientCompatibility json.RawMessage       `json:"official-client-compatibility"`
 	}
 	var body struct {
 		Index *int            `json:"index"`
@@ -493,6 +500,11 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	compatibility, compatibilityPresent, errCompatibility := decodeOfficialClientCompatibilityPatch(body.Value.OfficialClientCompatibility)
+	if errCompatibility != nil {
+		c.JSON(400, gin.H{"error": errCompatibility.Error()})
 		return
 	}
 
@@ -544,7 +556,14 @@ func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	if body.Value.RebuildMidSystemMessage != nil {
 		entry.RebuildMidSystemMessage = *body.Value.RebuildMidSystemMessage
 	}
+	if compatibilityPresent {
+		entry.OfficialClientCompatibility = compatibility
+	}
 	normalizeClaudeKey(&entry)
+	if errNormalize := normalizeManagementOfficialClientCompatibility("claude", entry.OfficialClientCompatibility); errNormalize != nil {
+		c.JSON(400, gin.H{"error": errNormalize.Error()})
+		return
+	}
 	h.cfg.ClaudeKey[targetIndex] = entry
 	h.cfg.SanitizeClaudeKeys()
 	h.persistLocked(c)
@@ -1141,6 +1160,12 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 		}
 		filtered = append(filtered, entry)
 	}
+	candidate := &config.Config{CodexKey: filtered}
+	if err = candidate.NormalizeOfficialClientCompatibility(true); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	filtered = candidate.CodexKey
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.CodexKey = filtered
@@ -1149,14 +1174,15 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
-		APIKey         *string              `json:"api-key"`
-		Prefix         *string              `json:"prefix"`
-		BaseURL        *string              `json:"base-url"`
-		ProxyURL       *string              `json:"proxy-url"`
-		Models         *[]config.CodexModel `json:"models"`
-		Headers        *map[string]string   `json:"headers"`
-		ExcludedModels *[]string            `json:"excluded-models"`
-		AllowedModels  *[]string            `json:"allowed-models"`
+		APIKey                      *string              `json:"api-key"`
+		Prefix                      *string              `json:"prefix"`
+		BaseURL                     *string              `json:"base-url"`
+		ProxyURL                    *string              `json:"proxy-url"`
+		Models                      *[]config.CodexModel `json:"models"`
+		Headers                     *map[string]string   `json:"headers"`
+		ExcludedModels              *[]string            `json:"excluded-models"`
+		AllowedModels               *[]string            `json:"allowed-models"`
+		OfficialClientCompatibility json.RawMessage      `json:"official-client-compatibility"`
 	}
 	var body struct {
 		Index *int           `json:"index"`
@@ -1165,6 +1191,11 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	compatibility, compatibilityPresent, errCompatibility := decodeOfficialClientCompatibilityPatch(body.Value.OfficialClientCompatibility)
+	if errCompatibility != nil {
+		c.JSON(400, gin.H{"error": errCompatibility.Error()})
 		return
 	}
 
@@ -1197,12 +1228,6 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	}
 	if body.Value.BaseURL != nil {
 		trimmed := strings.TrimSpace(*body.Value.BaseURL)
-		if trimmed == "" {
-			h.cfg.CodexKey = append(h.cfg.CodexKey[:targetIndex], h.cfg.CodexKey[targetIndex+1:]...)
-			h.cfg.SanitizeCodexKeys()
-			h.persistLocked(c)
-			return
-		}
 		entry.BaseURL = trimmed
 	}
 	if body.Value.ProxyURL != nil {
@@ -1220,7 +1245,20 @@ func (h *Handler) PatchCodexKey(c *gin.Context) {
 	if body.Value.AllowedModels != nil {
 		entry.AllowedModels = config.NormalizeAllowedModels(*body.Value.AllowedModels)
 	}
+	if compatibilityPresent {
+		entry.OfficialClientCompatibility = compatibility
+	}
 	normalizeCodexKey(&entry)
+	if errNormalize := normalizeManagementOfficialClientCompatibility("codex", entry.OfficialClientCompatibility); errNormalize != nil {
+		c.JSON(400, gin.H{"error": errNormalize.Error()})
+		return
+	}
+	if entry.BaseURL == "" {
+		h.cfg.CodexKey = append(h.cfg.CodexKey[:targetIndex], h.cfg.CodexKey[targetIndex+1:]...)
+		h.cfg.SanitizeCodexKeys()
+		h.persistLocked(c)
+		return
+	}
 	h.cfg.CodexKey[targetIndex] = entry
 	h.cfg.SanitizeCodexKeys()
 	h.persistLocked(c)
@@ -1290,6 +1328,10 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "failed to read body"})
 		return
 	}
+	if hasOfficialClientCompatibilityField(data) {
+		c.JSON(400, gin.H{"error": "xai official-client-compatibility is unsupported"})
+		return
+	}
 	var arr []config.XAIKey
 	if errUnmarshal := json.Unmarshal(data, &arr); errUnmarshal != nil {
 		var obj struct {
@@ -1310,6 +1352,11 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 		}
 		filtered = append(filtered, entry)
 	}
+	candidate := &config.Config{XAIKey: filtered}
+	if errValidation := candidate.NormalizeOfficialClientCompatibility(true); errValidation != nil {
+		c.JSON(400, gin.H{"error": errValidation.Error()})
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.cfg.XAIKey = filtered
@@ -1319,17 +1366,18 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 
 func (h *Handler) PatchXAIKey(c *gin.Context) {
 	type xaiKeyPatch struct {
-		APIKey         *string            `json:"api-key"`
-		Priority       *int               `json:"priority"`
-		Prefix         *string            `json:"prefix"`
-		BaseURL        *string            `json:"base-url"`
-		Websockets     *bool              `json:"websockets"`
-		ProxyURL       *string            `json:"proxy-url"`
-		Models         *[]config.XAIModel `json:"models"`
-		Headers        *map[string]string `json:"headers"`
-		ExcludedModels *[]string          `json:"excluded-models"`
-		AllowedModels  *[]string          `json:"allowed-models"`
-		DisableCooling *bool              `json:"disable-cooling"`
+		APIKey                      *string            `json:"api-key"`
+		Priority                    *int               `json:"priority"`
+		Prefix                      *string            `json:"prefix"`
+		BaseURL                     *string            `json:"base-url"`
+		Websockets                  *bool              `json:"websockets"`
+		ProxyURL                    *string            `json:"proxy-url"`
+		Models                      *[]config.XAIModel `json:"models"`
+		Headers                     *map[string]string `json:"headers"`
+		ExcludedModels              *[]string          `json:"excluded-models"`
+		AllowedModels               *[]string          `json:"allowed-models"`
+		DisableCooling              *bool              `json:"disable-cooling"`
+		OfficialClientCompatibility json.RawMessage    `json:"official-client-compatibility"`
 	}
 	var body struct {
 		Index *int         `json:"index"`
@@ -1338,6 +1386,10 @@ func (h *Handler) PatchXAIKey(c *gin.Context) {
 	}
 	if errBind := c.ShouldBindJSON(&body); errBind != nil || body.Value == nil {
 		c.JSON(400, gin.H{"error": "invalid body"})
+		return
+	}
+	if len(body.Value.OfficialClientCompatibility) > 0 {
+		c.JSON(400, gin.H{"error": "xai official-client-compatibility is unsupported"})
 		return
 	}
 

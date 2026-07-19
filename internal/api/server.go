@@ -32,6 +32,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/officialclient"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -63,6 +64,7 @@ var corsExposedResponseHeaders = []string{
 	"X-CPA-SUPPORT-CREDENTIAL-REFRESH",
 	"X-CPA-SUPPORT-TARGETED-REAUTH",
 	"X-CPA-SUPPORT-ALLOWED-MODELS",
+	officialclient.SupportHeader,
 	"X-CPA-HOME-VERSION",
 	"X-CPA-HOME-BUILD-DATE",
 	"X-SERVER-VERSION",

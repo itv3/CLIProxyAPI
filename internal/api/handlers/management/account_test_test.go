@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	"github.com/tidwall/gjson"
 )
 
 type accountTestExecutorStub struct {
@@ -25,6 +26,14 @@ func (s *accountTestExecutorStub) ExecuteProtocolWithAuthManager(_ context.Conte
 		responseBody = []byte(`{"model":"gpt-5","output_text":"OK"}`)
 	}
 	return sdkhandlers.ModelExecutionResponse{StatusCode: http.StatusOK, Body: responseBody}, nil
+}
+
+func (s *accountTestExecutorStub) ExecuteProtocolStreamWithAuthManager(_ context.Context, request sdkhandlers.ProtocolExecutionRequest) (sdkhandlers.ModelExecutionStream, *interfaces.ErrorMessage) {
+	s.request = request
+	chunks := make(chan sdkhandlers.ModelExecutionChunk, 1)
+	chunks <- sdkhandlers.ModelExecutionChunk{Payload: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n")}
+	close(chunks)
+	return sdkhandlers.ModelExecutionStream{StatusCode: http.StatusOK, Chunks: chunks}, nil
 }
 
 func TestAccountTestBuildsPinnedCompactExecution(t *testing.T) {
@@ -81,13 +90,31 @@ func TestBuildAccountTestExecutionUsesHiPrompt(t *testing.T) {
 			if !strings.Contains(body, `"hi"`) || strings.Contains(body, "Reply with OK") {
 				t.Fatalf("测试提示词错误：%s", body)
 			}
-			if request.Stream {
-				t.Fatal("当前管理端测试应保持非流式执行")
+			if request.Stream != (test.protocol == "messages") {
+				t.Fatalf("流式执行标记错误：protocol=%s stream=%v", test.protocol, request.Stream)
 			}
 			if test.protocol == "responses" && strings.Contains(body, "max_output_tokens") {
 				t.Fatalf("Responses 测试不应设置过小的输出上限：%s", body)
 			}
+			if test.protocol == "messages" {
+				if gjson.GetBytes(request.Body, "messages.0.content.0.text").String() != "hi" || gjson.GetBytes(request.Body, "max_tokens").Int() != 512 || gjson.GetBytes(request.Body, "tools.#").Int() != 27 || !gjson.GetBytes(request.Body, "stream").Bool() {
+					t.Fatalf("Claude Code 测试请求形态错误：%s", body)
+				}
+			}
 		})
+	}
+}
+
+func TestAccountTestResponsePreviewCollectsClaudeStream(t *testing.T) {
+	raw := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-opus-4-8\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi! \"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"How can I help?\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	if preview := accountTestResponsePreview(raw); preview != "Hi! How can I help?" {
+		t.Fatalf("Claude 流式回复提取结果 = %q", preview)
+	}
+	if model := accountTestUpstreamModel(raw); model != "claude-opus-4-8" {
+		t.Fatalf("Claude 流式模型提取结果 = %q", model)
+	}
+	if !accountTestStreamCompleted(raw) {
+		t.Fatal("Claude message_stop 未被识别为流式终止事件")
 	}
 }
 

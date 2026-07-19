@@ -20,6 +20,7 @@ import (
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/officialclient"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
@@ -200,6 +201,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	compatibilityDecision, err := helps.ResolveOfficialClientCompatibility(auth, opts.Headers, helps.OfficialClientConnectivityTest(opts.Metadata))
+	if err != nil {
+		return resp, helps.NewOfficialClientRequestError(err)
+	}
+	applyOfficialClientProfile := compatibilityDecision.State == officialclient.DecisionApply
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -230,11 +236,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
-	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
-	// based on client type and configuration.
-	body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
-	if err != nil {
-		return resp, err
+	if !applyOfficialClientProfile {
+		body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		if err != nil {
+			return resp, err
+		}
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
@@ -268,15 +274,29 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	extraBetas, body = extractAndRemoveBetas(body)
 	bodyForTranslation := body
 	bodyForUpstream := body
+	var officialClientState *helps.ClaudeOfficialClientRequestState
+	if applyOfficialClientProfile {
+		bodyForUpstream, officialClientState, err = helps.ApplyClaudeOfficialClientMessagesProfile(
+			compatibilityDecision.Profile,
+			auth.ID,
+			bodyForUpstream,
+			stream,
+			opts.Headers,
+			opts.Metadata,
+		)
+		if err != nil {
+			return resp, err
+		}
+	}
 	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
-	if oauthToken {
+	if oauthToken && !applyOfficialClientProfile {
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
 	// Claude Code always computes cch; missing or invalid cch is a detectable fingerprint.
-	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
+	if !applyOfficialClientProfile && (oauthToken || experimentalCCHSigningEnabled(e.cfg, auth)) {
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
@@ -286,7 +306,18 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	if err != nil {
 		return resp, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg); errHeaders != nil {
+	if applyOfficialClientProfile {
+		applyClaudeOfficialClientBaseHeaders(httpReq, auth, false)
+		endpoint := helps.ClaudeOfficialClientMessagesNonStream
+		if stream {
+			endpoint = helps.ClaudeOfficialClientMessagesStream
+		}
+		desired, errHeaders := helps.ClaudeOfficialClientHeaders(compatibilityDecision.Profile, endpoint, apiKey, bodyForUpstream, officialClientState)
+		if errHeaders != nil {
+			return resp, errHeaders
+		}
+		helps.FinalizeOfficialClientHeaders(httpReq.Header, e.Identifier(), desired)
+	} else if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg); errHeaders != nil {
 		return resp, errHeaders
 	}
 	var authID, authLabel, authType, authValue string
@@ -375,6 +406,13 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
 	}
 	data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+	if officialClientState != nil {
+		if stream {
+			data = officialClientState.RestoreSSE(data)
+		} else {
+			data = officialClientState.RestoreJSON(data)
+		}
+	}
 	var param any
 	out := sdktranslator.TranslateNonStream(
 		ctx,
@@ -395,6 +433,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	compatibilityDecision, err := helps.ResolveOfficialClientCompatibility(auth, opts.Headers, helps.OfficialClientConnectivityTest(opts.Metadata))
+	if err != nil {
+		return nil, helps.NewOfficialClientRequestError(err)
+	}
+	applyOfficialClientProfile := compatibilityDecision.State == officialclient.DecisionApply
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -423,11 +466,11 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
-	// Apply cloaking (system prompt injection, fake user ID, sensitive word obfuscation)
-	// based on client type and configuration.
-	body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
-	if err != nil {
-		return nil, err
+	if !applyOfficialClientProfile {
+		body, err = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
@@ -458,14 +501,28 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	extraBetas, body = extractAndRemoveBetas(body)
 	bodyForTranslation := body
 	bodyForUpstream := body
+	var officialClientState *helps.ClaudeOfficialClientRequestState
+	if applyOfficialClientProfile {
+		bodyForUpstream, officialClientState, err = helps.ApplyClaudeOfficialClientMessagesProfile(
+			compatibilityDecision.Profile,
+			auth.ID,
+			bodyForUpstream,
+			true,
+			opts.Headers,
+			opts.Metadata,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
 	oauthToken := isClaudeOAuthToken(apiKey)
 	var oauthToolNamesReverseMap map[string]string
-	if oauthToken {
+	if oauthToken && !applyOfficialClientProfile {
 		bodyForUpstream, oauthToolNamesReverseMap = prepareClaudeOAuthToolNamesForUpstream(bodyForUpstream, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	bodyForUpstream = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, bodyForUpstream, baseModel)
 	// Enable cch signing by default for OAuth tokens (not just experimental flag).
-	if oauthToken || experimentalCCHSigningEnabled(e.cfg, auth) {
+	if !applyOfficialClientProfile && (oauthToken || experimentalCCHSigningEnabled(e.cfg, auth)) {
 		bodyForUpstream = signAnthropicMessagesBody(bodyForUpstream)
 	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
@@ -475,7 +532,20 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if err != nil {
 		return nil, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg); errHeaders != nil {
+	if applyOfficialClientProfile {
+		applyClaudeOfficialClientBaseHeaders(httpReq, auth, true)
+		desired, errHeaders := helps.ClaudeOfficialClientHeaders(
+			compatibilityDecision.Profile,
+			helps.ClaudeOfficialClientMessagesStream,
+			apiKey,
+			bodyForUpstream,
+			officialClientState,
+		)
+		if errHeaders != nil {
+			return nil, errHeaders
+		}
+		helps.FinalizeOfficialClientHeaders(httpReq.Header, e.Identifier(), desired)
+	} else if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, true, extraBetas, e.cfg); errHeaders != nil {
 		return nil, errHeaders
 	}
 	var authID, authLabel, authType, authValue string
@@ -572,6 +642,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 					reporter.Publish(ctx, detail)
 				}
 				line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+				if officialClientState != nil {
+					line = officialClientState.RestoreSSELine(line)
+				}
 				event.Write(line)
 				event.WriteByte('\n')
 				if len(bytes.TrimSpace(line)) == 0 && !flushEvent() {
@@ -603,6 +676,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				reporter.Publish(ctx, detail)
 			}
 			line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
+			if officialClientState != nil {
+				line = officialClientState.RestoreSSELine(line)
+			}
 			chunks := sdktranslator.TranslateStream(
 				ctx,
 				to,
@@ -693,6 +769,11 @@ func validateClaudeStreamingResponse(data []byte) error {
 
 func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+	compatibilityDecision, err := helps.ResolveOfficialClientCompatibility(auth, opts.Headers, helps.OfficialClientConnectivityTest(opts.Metadata))
+	if err != nil {
+		return cliproxyexecutor.Response{}, helps.NewOfficialClientRequestError(err)
+	}
+	applyOfficialClientProfile := compatibilityDecision.State == officialclient.DecisionApply
 
 	apiKey, baseURL := claudeCreds(auth)
 	if baseURL == "" {
@@ -710,7 +791,7 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
-	if !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
+	if !applyOfficialClientProfile && !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
 		body = checkSystemInstructions(body)
 	}
 
@@ -721,7 +802,20 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	// Extract betas from body and convert to header (for count_tokens too)
 	var extraBetas []string
 	extraBetas, body = extractAndRemoveBetas(body)
-	if isClaudeOAuthToken(apiKey) {
+	var officialClientState *helps.ClaudeOfficialClientRequestState
+	if applyOfficialClientProfile {
+		body, officialClientState, err = helps.ApplyClaudeOfficialClientCountTokensProfile(
+			compatibilityDecision.Profile,
+			auth.ID,
+			body,
+			opts.Headers,
+			opts.Metadata,
+		)
+		if err != nil {
+			return cliproxyexecutor.Response{}, err
+		}
+	}
+	if isClaudeOAuthToken(apiKey) && !applyOfficialClientProfile {
 		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel)
@@ -731,7 +825,20 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg); errHeaders != nil {
+	if applyOfficialClientProfile {
+		applyClaudeOfficialClientBaseHeaders(httpReq, auth, false)
+		desired, errHeaders := helps.ClaudeOfficialClientHeaders(
+			compatibilityDecision.Profile,
+			helps.ClaudeOfficialClientCountTokens,
+			apiKey,
+			body,
+			officialClientState,
+		)
+		if errHeaders != nil {
+			return cliproxyexecutor.Response{}, errHeaders
+		}
+		helps.FinalizeOfficialClientHeaders(httpReq.Header, e.Identifier(), desired)
+	} else if errHeaders := applyClaudeHeaders(httpReq, auth, apiKey, false, extraBetas, e.cfg); errHeaders != nil {
 		return cliproxyexecutor.Response{}, errHeaders
 	}
 	var authID, authLabel, authType, authValue string
@@ -1046,6 +1153,29 @@ func decodeResponseBody(body io.ReadCloser, contentEncoding string) (io.ReadClos
 		}
 	}
 	return body, nil
+}
+
+func applyClaudeOfficialClientBaseHeaders(r *http.Request, auth *cliproxyauth.Auth, stream bool) {
+	if r == nil {
+		return
+	}
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Connection", "keep-alive")
+	if stream {
+		r.Header.Set("Accept", "text/event-stream")
+		r.Header.Set("Accept-Encoding", "identity")
+	} else {
+		r.Header.Set("Accept", "application/json")
+		r.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	}
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if stream {
+		r.Header.Set("Accept-Encoding", "identity")
+	}
 }
 
 func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string, stream bool, extraBetas []string, cfg *config.Config) error {

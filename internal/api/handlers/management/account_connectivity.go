@@ -1,8 +1,10 @@
 package management
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
@@ -22,6 +24,29 @@ const (
 	accountTestPrompt      = "hi"
 )
 
+var claudeOfficialClientTestToolNames = []string{
+	"Agent", "Bash", "CronCreate", "CronDelete", "CronList", "DesignSync", "Edit",
+	"EnterWorktree", "ExitWorktree", "Monitor", "NotebookEdit", "PushNotification",
+	"Read", "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "TaskCreate",
+	"TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate", "WebFetch",
+	"WebSearch", "Workflow", "Write",
+}
+
+func claudeOfficialClientTestTools() []map[string]any {
+	tools := make([]map[string]any, 0, len(claudeOfficialClientTestToolNames))
+	for _, name := range claudeOfficialClientTestToolNames {
+		tools = append(tools, map[string]any{
+			"name":        name,
+			"description": "Use " + name + " during the account connectivity test.",
+			"input_schema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		})
+	}
+	return tools
+}
+
 var accountTestSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(?:bearer\s+)?sk-[a-z0-9_-]{8,}`),
 	regexp.MustCompile(`AIza[a-zA-Z0-9_-]{20,}`),
@@ -29,6 +54,7 @@ var accountTestSecretPatterns = []*regexp.Regexp{
 
 type accountTestModelExecutor interface {
 	ExecuteProtocolWithAuthManager(context.Context, sdkhandlers.ProtocolExecutionRequest) (sdkhandlers.ModelExecutionResponse, *interfaces.ErrorMessage)
+	ExecuteProtocolStreamWithAuthManager(context.Context, sdkhandlers.ProtocolExecutionRequest) (sdkhandlers.ModelExecutionStream, *interfaces.ErrorMessage)
 }
 
 type accountTestRequest struct {
@@ -101,7 +127,7 @@ func (h *Handler) AccountTest(c *gin.Context) {
 	startedAt := time.Now()
 	testCtx := sdkhandlers.WithPinnedAuthID(c.Request.Context(), auth.ID)
 	testCtx = sdkhandlers.WithAccountConnectivityTest(testCtx)
-	result, errMessage := h.modelExecutor.ExecuteProtocolWithAuthManager(testCtx, request)
+	result, errMessage := executeAccountTest(testCtx, h.modelExecutor, request)
 	durationMS := time.Since(startedAt).Milliseconds()
 	if errMessage != nil {
 		statusCode := errMessage.StatusCode
@@ -130,6 +156,47 @@ func (h *Handler) AccountTest(c *gin.Context) {
 		Model: body.Model, UpstreamModel: accountTestUpstreamModel(result.Body),
 		DurationMS: durationMS, ResponsePreview: responsePreview,
 	})
+}
+
+// executeAccountTest 根据请求形态选择执行路径，并把流式事件汇总为可解析的响应体。
+func executeAccountTest(ctx context.Context, executor accountTestModelExecutor, request sdkhandlers.ProtocolExecutionRequest) (sdkhandlers.ModelExecutionResponse, *interfaces.ErrorMessage) {
+	if !request.Stream {
+		return executor.ExecuteProtocolWithAuthManager(ctx, request)
+	}
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, errMessage := executor.ExecuteProtocolStreamWithAuthManager(streamCtx, request)
+	if errMessage != nil {
+		return sdkhandlers.ModelExecutionResponse{}, errMessage
+	}
+	var body bytes.Buffer
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			return sdkhandlers.ModelExecutionResponse{}, &interfaces.ErrorMessage{
+				StatusCode: chunk.Err.StatusCode,
+				Error:      errors.New(chunk.Err.Error()),
+			}
+		}
+		body.Write(chunk.Payload)
+		if accountTestStreamCompleted(body.Bytes()) {
+			break
+		}
+	}
+	return sdkhandlers.ModelExecutionResponse{
+		StatusCode: stream.StatusCode,
+		Headers:    stream.Headers,
+		Body:       body.Bytes(),
+	}, nil
+}
+
+func accountTestStreamCompleted(raw []byte) bool {
+	for _, event := range accountTestSSEEvents(raw) {
+		switch gjson.GetBytes(event, "type").String() {
+		case "message_stop", "response.completed":
+			return true
+		}
+	}
+	return false
 }
 
 func buildAccountTestExecution(input accountTestRequest, provider string) (sdkhandlers.ProtocolExecutionRequest, string, error) {
@@ -167,8 +234,15 @@ func buildAccountTestExecution(input accountTestRequest, provider string) (sdkha
 	case "messages":
 		entryProtocol = "claude"
 		payload = map[string]any{
-			"model": input.Model, "messages": []map[string]string{{"role": "user", "content": accountTestPrompt}},
-			"max_tokens": 1024, "stream": false,
+			"model": input.Model,
+			"messages": []map[string]any{{
+				"role":    "user",
+				"content": []map[string]any{{"type": "text", "text": accountTestPrompt}},
+			}},
+			"system":     "Account connectivity test",
+			"max_tokens": 512,
+			"tools":      claudeOfficialClientTestTools(),
+			"stream":     true,
 		}
 	case "generate_content":
 		entryProtocol = "gemini"
@@ -190,6 +264,7 @@ func buildAccountTestExecution(input accountTestRequest, provider string) (sdkha
 	return sdkhandlers.ProtocolExecutionRequest{
 		EntryProtocol: entryProtocol, ExitProtocol: entryProtocol, ForcedProvider: provider,
 		AuthSelectionModel: input.Model, Model: input.Model, Body: raw, Alt: alt,
+		Stream: protocol == "messages",
 	}, displayProtocol, nil
 }
 
@@ -254,6 +329,13 @@ func accountTestUpstreamModel(raw []byte) string {
 			return safeAccountTestText(value, 256)
 		}
 	}
+	for _, event := range accountTestSSEEvents(raw) {
+		for _, path := range []string{"message.model", "model"} {
+			if value := strings.TrimSpace(gjson.GetBytes(event, path).String()); value != "" {
+				return safeAccountTestText(value, 256)
+			}
+		}
+	}
 	return ""
 }
 
@@ -267,7 +349,33 @@ func accountTestResponsePreview(raw []byte) string {
 			return safeAccountTestText(value, 512)
 		}
 	}
+	var streamedText strings.Builder
+	for _, event := range accountTestSSEEvents(raw) {
+		for _, path := range []string{"delta.text", "content_block.text"} {
+			if value := gjson.GetBytes(event, path).String(); value != "" {
+				streamedText.WriteString(value)
+			}
+		}
+	}
+	if value := strings.TrimSpace(streamedText.String()); value != "" {
+		return safeAccountTestText(value, 512)
+	}
 	return ""
+}
+
+func accountTestSSEEvents(raw []byte) [][]byte {
+	events := make([][]byte, 0)
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(data) > 0 && !bytes.Equal(data, []byte("[DONE]")) && gjson.ValidBytes(data) {
+			events = append(events, bytes.Clone(data))
+		}
+	}
+	return events
 }
 
 func safeAccountTestText(value string, limit int) string {

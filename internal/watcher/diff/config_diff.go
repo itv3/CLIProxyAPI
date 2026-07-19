@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/officialclient"
 )
 
 // BuildConfigChangeDetails computes a redacted, human-readable list of config changes.
@@ -224,6 +225,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if o.RebuildMidSystemMessage != n.RebuildMidSystemMessage {
 				changes = append(changes, fmt.Sprintf("claude[%d].rebuild-mid-system-message: %t -> %t", i, o.RebuildMidSystemMessage, n.RebuildMidSystemMessage))
 			}
+			if !reflect.DeepEqual(o.OfficialClientCompatibility, n.OfficialClientCompatibility) {
+				changes = append(changes, fmt.Sprintf("claude[%d].official-client-compatibility: %s -> %s", i, formatOfficialClientCompatibility(o.OfficialClientCompatibility), formatOfficialClientCompatibility(n.OfficialClientCompatibility)))
+			}
 			if o.Cloak != nil && n.Cloak != nil {
 				if strings.TrimSpace(o.Cloak.Mode) != strings.TrimSpace(n.Cloak.Mode) {
 					changes = append(changes, fmt.Sprintf("claude[%d].cloak.mode: %s -> %s", i, o.Cloak.Mode, n.Cloak.Mode))
@@ -272,6 +276,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("codex[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+			if !reflect.DeepEqual(o.OfficialClientCompatibility, n.OfficialClientCompatibility) {
+				changes = append(changes, fmt.Sprintf("codex[%d].official-client-compatibility: %s -> %s", i, formatOfficialClientCompatibility(o.OfficialClientCompatibility), formatOfficialClientCompatibility(n.OfficialClientCompatibility)))
 			}
 		}
 	}
@@ -405,6 +412,17 @@ func trimStrings(in []string) []string {
 		out[i] = strings.TrimSpace(in[i])
 	}
 	return out
+}
+
+func formatOfficialClientCompatibility(value *officialclient.CompatibilityConfig) string {
+	if value == nil {
+		return "unset"
+	}
+	profile := strings.TrimSpace(value.Profile)
+	if profile == "" {
+		profile = "none"
+	}
+	return fmt.Sprintf("enabled=%t,profile=%s", value.Enabled, profile)
 }
 
 func appendPayloadConfigChanges(changes []string, oldPayload, newPayload config.PayloadConfig) []string {

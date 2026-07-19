@@ -21,6 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/officialclient"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
@@ -1869,7 +1870,11 @@ func (e *CodexAutoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return cliproxyexecutor.Response{}, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
+	useWebsocket, err := codexAutoUseWebsocket(ctx, auth, opts)
+	if err != nil {
+		return cliproxyexecutor.Response{}, err
+	}
+	if useWebsocket {
 		return e.wsExec.Execute(ctx, auth, req, opts)
 	}
 	return e.httpExec.Execute(ctx, auth, req, opts)
@@ -1879,7 +1884,11 @@ func (e *CodexAutoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyaut
 	if e == nil || e.httpExec == nil || e.wsExec == nil {
 		return nil, fmt.Errorf("codex auto executor: executor is nil")
 	}
-	if cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth) {
+	useWebsocket, err := codexAutoUseWebsocket(ctx, auth, opts)
+	if err != nil {
+		return nil, err
+	}
+	if useWebsocket {
 		return e.wsExec.ExecuteStream(ctx, auth, req, opts)
 	}
 	return e.httpExec.ExecuteStream(ctx, auth, req, opts)
@@ -1911,6 +1920,17 @@ func (e *CodexAutoExecutor) UpstreamDisconnectChan(sessionID string) <-chan erro
 		return nil
 	}
 	return e.wsExec.UpstreamDisconnectChan(sessionID)
+}
+
+func codexAutoUseWebsocket(ctx context.Context, auth *cliproxyauth.Auth, opts cliproxyexecutor.Options) (bool, error) {
+	decision, err := helps.ResolveOfficialClientCompatibility(auth, opts.Headers, helps.OfficialClientConnectivityTest(opts.Metadata))
+	if err != nil {
+		return false, helps.NewOfficialClientRequestError(err)
+	}
+	if decision.State == officialclient.DecisionApply {
+		return false, nil
+	}
+	return cliproxyexecutor.DownstreamWebsocket(ctx) && codexWebsocketsEnabled(auth), nil
 }
 
 func codexWebsocketsEnabled(auth *cliproxyauth.Auth) bool {

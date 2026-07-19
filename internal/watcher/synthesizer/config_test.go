@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/officialclient"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
@@ -390,6 +391,123 @@ func TestConfigSynthesizer_XAIKeys(t *testing.T) {
 	}
 	if disabled, ok := auth.Metadata["disable_cooling"].(bool); !ok || !disabled {
 		t.Fatalf("disable_cooling = %#v, want true", auth.Metadata["disable_cooling"])
+	}
+}
+
+func TestConfigSynthesizer_OfficialClientCompatibility(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	claudeCompatibility := &officialclient.CompatibilityConfig{
+		Enabled: true,
+		Profile: "claude-desktop-2.1.215-v1",
+	}
+	codexCompatibility := &officialclient.CompatibilityConfig{
+		Enabled: false,
+		Profile: "codex-desktop-0.145.0-alpha.18-v1",
+	}
+	ctx := &SynthesisContext{
+		Config: &config.Config{
+			ClaudeKey: []config.ClaudeKey{{
+				APIKey:                      "claude-key",
+				OfficialClientCompatibility: claudeCompatibility,
+			}},
+			CodexKey: []config.CodexKey{{
+				APIKey:                      "codex-key",
+				BaseURL:                     "https://api.openai.com/v1",
+				OfficialClientCompatibility: codexCompatibility,
+			}},
+		},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths, err := synth.Synthesize(ctx)
+	if err != nil {
+		t.Fatalf("Synthesize() error = %v", err)
+	}
+	if len(auths) != 2 {
+		t.Fatalf("auth count = %d, want 2", len(auths))
+	}
+	for _, auth := range auths {
+		compatibility, errDecode := officialclient.CompatibilityFromAttributes(auth.Attributes)
+		if errDecode != nil {
+			t.Fatalf("decode %s compatibility: %v", auth.Provider, errDecode)
+		}
+		if compatibility == nil {
+			t.Fatalf("%s compatibility attribute is missing", auth.Provider)
+		}
+		if errValidate := officialclient.ValidateCompatibility(auth.Provider, compatibility); errValidate != nil {
+			t.Fatalf("validate %s compatibility: %v", auth.Provider, errValidate)
+		}
+	}
+}
+
+func TestConfigSynthesizer_CompatibilityChangeKeepsStableID(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	synthesize := func(enabled bool) *coreauth.Auth {
+		ctx := &SynthesisContext{
+			Config: &config.Config{CodexKey: []config.CodexKey{{
+				APIKey:  "codex-key",
+				BaseURL: "https://api.openai.com/v1",
+				OfficialClientCompatibility: &officialclient.CompatibilityConfig{
+					Enabled: enabled,
+					Profile: "codex-desktop-0.145.0-alpha.18-v1",
+				},
+			}}},
+			Now:         time.Now(),
+			IDGenerator: NewStableIDGenerator(),
+		}
+		auths, err := synth.Synthesize(ctx)
+		if err != nil {
+			t.Fatalf("Synthesize() error = %v", err)
+		}
+		return auths[0]
+	}
+
+	disabled := synthesize(false)
+	enabled := synthesize(true)
+	if disabled.ID != enabled.ID {
+		t.Fatalf("auth ID changed: %q != %q", disabled.ID, enabled.ID)
+	}
+	if disabled.Attributes[officialclient.AttributeKey] == enabled.Attributes[officialclient.AttributeKey] {
+		t.Fatal("compatibility attribute did not change")
+	}
+}
+
+func TestConfigSynthesizer_RejectsXAICompatibility(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{XAIKey: []config.XAIKey{{
+			APIKey:                      "xai-key",
+			BaseURL:                     "https://api.x.ai/v1",
+			OfficialClientCompatibility: &officialclient.CompatibilityConfig{},
+		}}},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	if _, err := synth.Synthesize(ctx); err == nil {
+		t.Fatal("Synthesize() unexpectedly accepted xAI compatibility")
+	}
+}
+
+func TestConfigSynthesizer_XAIStylePathNeverWritesCompatibilityAttribute(t *testing.T) {
+	synth := NewConfigSynthesizer()
+	ctx := &SynthesisContext{
+		Config: &config.Config{XAIKey: []config.XAIKey{{
+			APIKey:  "xai-key",
+			BaseURL: "https://api.x.ai/v1",
+			OfficialClientCompatibility: &officialclient.CompatibilityConfig{
+				Enabled: true,
+				Profile: "codex-desktop-0.145.0-alpha.18-v1",
+			},
+		}}},
+		Now:         time.Now(),
+		IDGenerator: NewStableIDGenerator(),
+	}
+	auths := synth.synthesizeCodexStyleKeys(ctx, ctx.Config.XAIKey, "xai")
+	if len(auths) != 1 {
+		t.Fatalf("auth count = %d, want 1", len(auths))
+	}
+	if _, exists := auths[0].Attributes[officialclient.AttributeKey]; exists {
+		t.Fatal("xAI auth contains official client compatibility attribute")
 	}
 }
 

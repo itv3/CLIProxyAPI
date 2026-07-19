@@ -1,9 +1,11 @@
 package diff
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/officialclient"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
@@ -90,6 +92,43 @@ func TestBuildConfigChangeDetails_NoChanges(t *testing.T) {
 	}
 	if details := BuildConfigChangeDetails(cfg, cfg); len(details) != 0 {
 		t.Fatalf("expected no change entries, got %v", details)
+	}
+}
+
+func TestBuildConfigChangeDetailsOfficialClientCompatibility(t *testing.T) {
+	oldCfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{APIKey: "claude-secret"}},
+		CodexKey: []config.CodexKey{{
+			APIKey: "codex-secret",
+			OfficialClientCompatibility: &officialclient.CompatibilityConfig{
+				Profile: "codex-desktop-0.145.0-alpha.18-v1",
+			},
+		}},
+	}
+	newCfg := &config.Config{
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey: "claude-secret",
+			OfficialClientCompatibility: &officialclient.CompatibilityConfig{
+				Enabled: true,
+				Profile: "claude-desktop-2.1.215-v1",
+			},
+		}},
+		CodexKey: []config.CodexKey{{
+			APIKey: "codex-secret",
+			OfficialClientCompatibility: &officialclient.CompatibilityConfig{
+				Enabled: true,
+				Profile: "codex-desktop-0.145.0-alpha.18-v1",
+			},
+		}},
+	}
+
+	details := BuildConfigChangeDetails(oldCfg, newCfg)
+	expectContains(t, details, "claude[0].official-client-compatibility: unset -> enabled=true,profile=claude-desktop-2.1.215-v1")
+	expectContains(t, details, "codex[0].official-client-compatibility: enabled=false,profile=codex-desktop-0.145.0-alpha.18-v1 -> enabled=true,profile=codex-desktop-0.145.0-alpha.18-v1")
+	for _, detail := range details {
+		if strings.Contains(detail, "claude-secret") || strings.Contains(detail, "codex-secret") {
+			t.Fatalf("change detail exposes API key: %q", detail)
+		}
 	}
 }
 
