@@ -25,6 +25,8 @@ func TestAllowedModelPolicyForAuthReadsAttributesAndMetadata(t *testing.T) {
 		"allowed_models": []any{"claude-*"},
 		"model_aliases": []any{
 			map[string]any{"name": "claude-sonnet", "alias": "sonnet"},
+			map[string]any{"name": "identity", "alias": "identity"},
+			map[string]any{"name": "implicit-identity"},
 		},
 	}}
 	metadataPolicy := AllowedModelPolicyForAuth(authFromMetadata)
@@ -33,6 +35,20 @@ func TestAllowedModelPolicyForAuthReadsAttributesAndMetadata(t *testing.T) {
 	}
 	if !reflect.DeepEqual(metadataPolicy.Aliases, []string{"sonnet"}) {
 		t.Fatalf("metadata aliases = %#v", metadataPolicy.Aliases)
+	}
+
+	aliasOnlyAuth := &Auth{Attributes: map[string]string{
+		AttributeAllowedModelAliases: `["glm-5.2"]`,
+	}}
+	aliasOnlyPolicy := AllowedModelPolicyForAuth(aliasOnlyAuth)
+	if aliasOnlyPolicy.Configured {
+		t.Fatal("alias-only policy unexpectedly configured an allowlist")
+	}
+	if len(aliasOnlyPolicy.Patterns) != 0 {
+		t.Fatalf("alias-only patterns = %#v", aliasOnlyPolicy.Patterns)
+	}
+	if !reflect.DeepEqual(aliasOnlyPolicy.Aliases, []string{"glm-5.2"}) {
+		t.Fatalf("alias-only aliases = %#v", aliasOnlyPolicy.Aliases)
 	}
 }
 

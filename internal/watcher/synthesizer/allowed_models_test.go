@@ -67,6 +67,20 @@ func TestMappedModelAliasesKeepsOnlyNonIdentityAliases(t *testing.T) {
 	}
 }
 
+func TestOAuthModelAliasNamesKeepsOnlyNonIdentityAliases(t *testing.T) {
+	aliases := []config.OAuthModelAlias{
+		{Name: "upstream-a", Alias: "client-a"},
+		{Name: "identity-a", Alias: "identity-a"},
+		{Name: "identity-b"},
+		{Name: "Identity-C", Alias: "identity-c"},
+		{Name: "", Alias: "client-without-name"},
+	}
+
+	if got := oauthModelAliasNames(aliases); !reflect.DeepEqual(got, []string{"client-a", "client-without-name"}) {
+		t.Fatalf("OAuth 映射别名 = %#v", got)
+	}
+}
+
 func TestFileSynthesizerAppliesAllowlistToPluginVirtualAuths(t *testing.T) {
 	authDir := t.TempDir()
 	path := filepath.Join(authDir, "plugin.json")

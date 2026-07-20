@@ -61,7 +61,7 @@ func IsValidAllowedModelPattern(pattern string) bool {
 }
 
 // SetAllowedModelsAttribute stores a normalized allowlist on an auth entry.
-// Empty lists remove the attribute and therefore retain the legacy allow-all behavior.
+// Empty lists remove the attribute; when mapped aliases exist, registration retains only them.
 func SetAllowedModelsAttribute(auth *Auth, models []string) {
 	setModelListAttribute(auth, AttributeAllowedModels, models)
 }
@@ -126,15 +126,12 @@ func AllowedModelPolicyForAuth(auth *Auth) AllowedModelPolicy {
 	if len(patterns) == 0 {
 		patterns = modelListFromMetadata(auth.Metadata, "allowed_models", "allowed-models")
 	}
-	if len(patterns) == 0 {
-		return AllowedModelPolicy{}
-	}
 	aliases := AllowedModelAliasesFromAttributes(auth.Attributes)
 	if len(aliases) == 0 {
 		aliases = modelAliasesFromMetadata(auth.Metadata)
 	}
 	return AllowedModelPolicy{
-		Configured: true,
+		Configured: len(patterns) > 0,
 		Patterns:   patterns,
 		Aliases:    aliases,
 	}
@@ -196,11 +193,9 @@ func modelAliasesFromMetadata(metadata map[string]any) []string {
 	}
 	aliases := make([]string, 0, len(mappings))
 	for _, mapping := range mappings {
+		name := strings.TrimSpace(mapping.Name)
 		alias := strings.TrimSpace(mapping.Alias)
-		if alias == "" {
-			alias = strings.TrimSpace(mapping.Name)
-		}
-		if alias != "" {
+		if alias != "" && !strings.EqualFold(alias, name) {
 			aliases = append(aliases, alias)
 		}
 	}

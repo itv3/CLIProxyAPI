@@ -8,7 +8,10 @@ import (
 
 func filterAllowedModelsForAuth(auth *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
 	policy := coreauth.AllowedModelPolicyForAuth(auth)
-	if !policy.Configured || len(models) == 0 {
+	if len(models) == 0 {
+		return models
+	}
+	if !policy.Configured && len(policy.Aliases) == 0 {
 		return models
 	}
 

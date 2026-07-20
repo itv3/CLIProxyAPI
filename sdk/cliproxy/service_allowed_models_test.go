@@ -43,7 +43,7 @@ func TestRegisterResolvedModelsForAuthFiltersClientVisibleModels(t *testing.T) {
 	}
 }
 
-func TestRegisterResolvedModelsForAuthEmptyAllowlistKeepsLegacyBehavior(t *testing.T) {
+func TestRegisterResolvedModelsForAuthEmptyAllowlistWithoutAliasesKeepsLegacyBehavior(t *testing.T) {
 	auth := &coreauth.Auth{ID: "empty-allowed-model-auth"}
 	registry := GlobalModelRegistry()
 	registry.UnregisterClient(auth.ID)
@@ -52,6 +52,29 @@ func TestRegisterResolvedModelsForAuthEmptyAllowlistKeepsLegacyBehavior(t *testi
 	(&Service{}).registerResolvedModelsForAuth(auth, "test-provider", []*ModelInfo{{ID: "model-a"}, {ID: "model-b"}})
 	if models := internalregistry.GetGlobalRegistry().GetModelsForClient(auth.ID); len(models) != 2 {
 		t.Fatalf("empty allowlist registered %d models, want 2", len(models))
+	}
+}
+
+func TestRegisterResolvedModelsForAuthEmptyAllowlistRegistersOnlyMappedAliases(t *testing.T) {
+	auth := &coreauth.Auth{ID: "alias-only-allowed-model-auth"}
+	coreauth.SetAllowedModelAliasesAttribute(auth, []string{"glm-5.2"})
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() { registry.UnregisterClient(auth.ID) })
+
+	(&Service{}).registerResolvedModelsForAuth(auth, "test-provider", []*ModelInfo{
+		{ID: "z-ai/glm-5.2"},
+		{ID: "glm-5.2"},
+	})
+	models := internalregistry.GetGlobalRegistry().GetModelsForClient(auth.ID)
+	if len(models) != 1 || models[0].ID != "glm-5.2" {
+		t.Fatalf("alias-only registration = %#v", models)
+	}
+	if !registry.ClientSupportsModel(auth.ID, "glm-5.2") {
+		t.Fatal("mapped alias was not eligible for scheduling")
+	}
+	if registry.ClientSupportsModel(auth.ID, "z-ai/glm-5.2") {
+		t.Fatal("upstream model remained eligible for scheduling")
 	}
 }
 

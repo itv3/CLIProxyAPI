@@ -358,7 +358,8 @@ func oauthModelAliasNames(aliases []config.OAuthModelAlias) []string {
 	}
 	out := make([]string, 0, len(aliases))
 	for i := range aliases {
-		if alias := strings.TrimSpace(aliases[i].Alias); alias != "" {
+		name := strings.TrimSpace(aliases[i].Name)
+		if alias := strings.TrimSpace(aliases[i].Alias); alias != "" && !strings.EqualFold(alias, name) {
 			out = append(out, alias)
 		}
 	}

@@ -162,6 +162,14 @@ func TestApplyAPIKeyModelAlias(t *testing.T) {
 		GeminiKey: []internalconfig.GeminiKey{
 			{APIKey: "k", Models: []internalconfig.GeminiModel{{Name: "gemini-2.5-pro-exp-03-25", Alias: "g25p"}}},
 		},
+		OpenAICompatibility: []internalconfig.OpenAICompatibility{{
+			Name:    "nvidia",
+			BaseURL: "https://integrate.api.nvidia.com/v1",
+			APIKeyEntries: []internalconfig.OpenAICompatibilityAPIKey{{
+				APIKey: "nvidia-key",
+			}},
+			Models: []internalconfig.OpenAICompatibilityModel{{Name: "z-ai/glm-5.2", Alias: "glm-5.2"}},
+		}},
 	}
 
 	mgr := NewManager(nil, nil, nil)
@@ -169,8 +177,12 @@ func TestApplyAPIKeyModelAlias(t *testing.T) {
 
 	ctx := context.Background()
 	apiKeyAuth := &Auth{ID: "a1", Provider: "gemini", Attributes: map[string]string{"api_key": "k"}}
+	nvidiaAuth := &Auth{ID: "nvidia", Provider: "nvidia", Attributes: map[string]string{
+		"api_key": "nvidia-key", "compat_name": "nvidia", "provider_key": "nvidia",
+	}}
 	oauthAuth := &Auth{ID: "oauth-auth", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}}
 	_, _ = mgr.Register(ctx, apiKeyAuth)
+	_, _ = mgr.Register(ctx, nvidiaAuth)
 
 	tests := []struct {
 		name       string
@@ -189,6 +201,12 @@ func TestApplyAPIKeyModelAlias(t *testing.T) {
 			auth:       oauthAuth,
 			inputModel: "some-model",
 			wantModel:  "some-model",
+		},
+		{
+			name:       "openai compatibility alias",
+			auth:       nvidiaAuth,
+			inputModel: "glm-5.2",
+			wantModel:  "z-ai/glm-5.2",
 		},
 	}
 
