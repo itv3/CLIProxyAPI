@@ -34,6 +34,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 type releaseInfo struct {
 	TagName string `json:"tag_name"`
 	Name    string `json:"name"`
+	HTMLURL string `json:"html_url"`
 }
 
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
@@ -88,7 +89,11 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"latest-version": version})
+	payload := gin.H{"latest-version": version}
+	if releaseURL := strings.TrimSpace(info.HTMLURL); releaseURL != "" {
+		payload["release-url"] = releaseURL
+	}
+	c.JSON(http.StatusOK, payload)
 }
 
 func WriteConfig(path string, data []byte) error {
