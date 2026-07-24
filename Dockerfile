@@ -10,7 +10,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=v7.2.93-1
+ARG VERSION=v7.2.97-1
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
